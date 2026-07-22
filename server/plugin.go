@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,72 +16,71 @@ import (
 	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
 	"github.com/pkg/errors"
 
-	"github.com/mattermost/mattermost-plugin-starter-template/server/command"
-	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
+	"github.com/onetake-pte-ltd/mattermost-plugin-neil/server/command"
+	"github.com/onetake-pte-ltd/mattermost-plugin-neil/server/store/kvstore"
 )
 
-// Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
+// Plugin implements the interface expected by the Mattermost server.
 type Plugin struct {
 	plugin.MattermostPlugin
 
-	// kvstore is the client used to read/write KV records for this plugin.
-	kvstore kvstore.KVStore
-
-	// client is the Mattermost server API client.
-	client *pluginapi.Client
-
-	// commandClient is the client used to register and execute slash commands.
+	kvstore       kvstore.KVStore
+	client        *pluginapi.Client
 	commandClient command.Command
-
-	// router is the HTTP router for handling API requests.
-	router *mux.Router
-
+	router        *mux.Router
 	backgroundJob *cluster.Job
 
-	// configurationLock synchronizes access to the configuration.
 	configurationLock sync.RWMutex
+	configuration     *configuration
 
-	// configuration is the active plugin configuration. Consult getConfiguration and
-	// setConfiguration for usage.
-	configuration *configuration
+	botUserID string
 }
 
-// OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
 	p.client = pluginapi.NewClient(p.API, p.Driver)
-
 	p.kvstore = kvstore.NewKVStore(p.client)
 
-	p.commandClient = command.NewCommandHandler(p.client)
+	cfg := p.getConfiguration()
+	botUserID, err := p.client.Bot.EnsureBot(&model.Bot{
+		Username:    "neil",
+		DisplayName: cfg.botDisplayName(),
+		Description: "Neil; daily storyselling email bot",
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to ensure bot user")
+	}
+	p.botUserID = botUserID
 
+	p.commandClient = command.NewCommandHandler(p.client, p)
 	p.router = p.initRouter()
 
-	job, err := cluster.Schedule(
+	if regErr := p.registerWebhook(); regErr != nil {
+		p.API.LogWarn("Neil: failed to register Telegram webhook", "error", regErr.Error())
+	}
+
+	job, schedErr := cluster.Schedule(
 		p.API,
-		"BackgroundJob",
+		"NeilMorningJob",
 		cluster.MakeWaitForRoundedInterval(1*time.Hour),
 		p.runJob,
 	)
-	if err != nil {
-		return errors.Wrap(err, "failed to schedule background job")
+	if schedErr != nil {
+		return errors.Wrap(schedErr, "failed to schedule background job")
 	}
-
 	p.backgroundJob = job
 
 	return nil
 }
 
-// OnDeactivate is invoked when the plugin is deactivated.
 func (p *Plugin) OnDeactivate() error {
 	if p.backgroundJob != nil {
 		if err := p.backgroundJob.Close(); err != nil {
-			p.API.LogError("Failed to close background job", "err", err)
+			p.API.LogError("Neil: failed to close background job", "error", err)
 		}
 	}
 	return nil
 }
 
-// This will execute the commands that were registered in the NewCommandHandler function.
 func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	response, err := p.commandClient.Handle(args)
 	if err != nil {
@@ -86,4 +89,77 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	return response, nil
 }
 
-// See https://developers.mattermost.com/extend/plugins/server/reference/
+// MessageHasBeenPosted triggers the processor when a user posts "@neil run" in any channel.
+func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
+	if p.botUserID == "" || post.UserId == p.botUserID {
+		return
+	}
+	msg := strings.ToLower(post.Message)
+	if !strings.Contains(msg, "@neil") || !strings.Contains(msg, "run") {
+		return
+	}
+	go p.RunProcessor("")
+}
+
+func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+	p.router.ServeHTTP(w, r)
+}
+
+// MattermostAuthorizationRequired is a middleware that requires a valid Mattermost user session.
+func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Mattermost-User-ID") == "" {
+			http.Error(w, "Not authorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (p *Plugin) postToChannel(msg string) {
+	cfg := p.getConfiguration()
+	if cfg.ChannelID == "" {
+		p.API.LogWarn("Neil: no channel configured, dropping message")
+		return
+	}
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: cfg.ChannelID,
+		Message:   msg,
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogError("Neil: failed to post to channel", "error", appErr.Error())
+	}
+}
+
+func (p *Plugin) registerWebhook() error {
+	if p.kvstore == nil {
+		return fmt.Errorf("kvstore not initialized")
+	}
+
+	cfg := p.getConfiguration()
+	if cfg.TelegramBotToken == "" {
+		return nil
+	}
+
+	secret, err := p.kvstore.GetWebhookSecret()
+	if err != nil || secret == "" {
+		b := make([]byte, 32)
+		if _, randErr := rand.Read(b); randErr != nil {
+			return fmt.Errorf("generate webhook secret: %w", randErr)
+		}
+		secret = hex.EncodeToString(b)
+		if storeErr := p.kvstore.StoreWebhookSecret(secret); storeErr != nil {
+			return fmt.Errorf("store webhook secret: %w", storeErr)
+		}
+	}
+
+	mmCfg := p.API.GetConfig()
+	if mmCfg.ServiceSettings.SiteURL == nil || *mmCfg.ServiceSettings.SiteURL == "" {
+		return fmt.Errorf("SiteURL not configured")
+	}
+	webhookURL := fmt.Sprintf("%s/plugins/com.onetake.neil/telegram/webhook", *mmCfg.ServiceSettings.SiteURL)
+
+	tgClient := newTelegramClient(cfg.TelegramBotToken)
+	return tgClient.SetWebhook(webhookURL, secret)
+}

@@ -1,9 +1,9 @@
 {
-    "id": "com.mattermost.plugin-starter-template",
-    "name": "Plugin Starter Template",
-    "description": "This plugin serves as a starting point for writing a Mattermost plugin.",
-    "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
-    "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
+    "id": "com.onetake.neil",
+    "name": "Neil",
+    "description": "Daily storyselling email bot. Monitors a Telegram channel, transcribes voice and video content, and posts production-ready email Liquid code every morning at 6:00 AM CET.",
+    "homepage_url": "https://onetake.ai",
+    "support_url": "https://onetake.ai",
     "icon_path": "assets/starter-template-icon.svg",
     "min_server_version": "6.2.1",
     "server": {
@@ -19,8 +19,103 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "",
+        "header": "Configure Neil, the daily storyselling email bot for OneTake AI.",
         "footer": "",
-        "settings": []
+        "settings": [
+            {
+                "key": "BotDisplayName",
+                "type": "text",
+                "display_name": "Bot Display Name",
+                "help_text": "The name shown on Neil's posts in Mattermost.",
+                "placeholder": "Neil",
+                "default": "Neil"
+            },
+            {
+                "key": "ChannelID",
+                "type": "text",
+                "display_name": "Channel ID",
+                "help_text": "The ID of the Mattermost channel where Neil posts each morning. Find it in the channel URL.",
+                "placeholder": "channelid123"
+            },
+            {
+                "key": "UsersToTag",
+                "type": "text",
+                "display_name": "Users to Tag",
+                "help_text": "Comma-separated Mattermost usernames to @-mention in each post (e.g. seb,julie). These users are also authorised to run /neil run.",
+                "placeholder": "seb,julie"
+            },
+            {
+                "key": "TelegramChannelUsername",
+                "type": "text",
+                "display_name": "Telegram Channel Username",
+                "help_text": "The @username of the public Telegram channel to monitor, without the @.",
+                "placeholder": "onetakeai"
+            },
+            {
+                "key": "TelegramBotToken",
+                "type": "text",
+                "display_name": "Telegram Bot Token",
+                "help_text": "The token provided by BotFather. Stored encrypted.",
+                "placeholder": "123456:ABC-DEF..."
+            },
+            {
+                "key": "BunnyCDNEdgeScriptURL",
+                "type": "text",
+                "display_name": "BunnyCDN Edge Script URL",
+                "help_text": "The base URL of the deployed Bunny Edge Script proxy (e.g. https://neil-upload.b-cdn.net).",
+                "placeholder": "https://neil-upload.b-cdn.net"
+            },
+            {
+                "key": "BunnyCDNEdgeScriptSecret",
+                "type": "text",
+                "display_name": "BunnyCDN Edge Script Secret",
+                "help_text": "The shared secret used to authenticate uploads to the Bunny Edge Script. This is not the BunnyCDN API key. Stored encrypted.",
+                "placeholder": "your-shared-secret"
+            },
+            {
+                "key": "ElevenLabsAPIKey",
+                "type": "text",
+                "display_name": "ElevenLabs API Key",
+                "help_text": "API key for ElevenLabs Speech-to-Text (Scribe v2). Stored encrypted.",
+                "placeholder": "your-elevenlabs-api-key"
+            },
+            {
+                "key": "AnthropicAPIKey",
+                "type": "text",
+                "display_name": "Anthropic API Key",
+                "help_text": "API key for the Anthropic Claude API. Stored encrypted.",
+                "placeholder": "sk-ant-..."
+            },
+            {
+                "key": "AnthropicModel",
+                "type": "text",
+                "display_name": "Anthropic Model",
+                "help_text": "The Claude model string used for email generation.",
+                "placeholder": "claude-sonnet-4-6",
+                "default": "claude-sonnet-4-6"
+            },
+            {
+                "key": "DefaultCTAURL",
+                "type": "text",
+                "display_name": "Default CTA URL",
+                "help_text": "The fallback CTA link used when no URL is found in the day's Telegram posts.",
+                "placeholder": "https://onetake.ai/pricing"
+            },
+            {
+                "key": "OfferDescription",
+                "type": "longtext",
+                "display_name": "Offer Description",
+                "help_text": "A description of the current OneTake offer. Injected into the Bridge step of the email pipeline. Update this when promotions change — no redeployment needed.",
+                "placeholder": "OneTake is an AI agent that turns raw video footage into professional, multi-language, ready-to-sell content in seconds..."
+            },
+            {
+                "key": "TranscriptionLanguage",
+                "type": "text",
+                "display_name": "Transcription Language Code",
+                "help_text": "The BCP-47 language code passed to ElevenLabs for transcription (e.g. fr for French, en for English).",
+                "placeholder": "fr",
+                "default": "fr"
+            }
+        ]
     }
 }
