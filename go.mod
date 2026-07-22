@@ -1,4 +1,4 @@
-module github.com/mattermost/mattermost-plugin-starter-template
+module github.com/onetake-pte-ltd/mattermost-plugin-neil
 
 go 1.25
 

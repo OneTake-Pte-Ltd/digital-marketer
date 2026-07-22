@@ -1,47 +1,56 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-// initRouter initializes the HTTP router for the plugin.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 
-	// Middleware to require that the user is logged in
-	router.Use(p.MattermostAuthorizationRequired)
+	// Telegram webhook bypasses Mattermost auth — Telegram sends unauthenticated requests.
+	router.HandleFunc("/telegram/webhook", p.handleTelegramWebhook).Methods(http.MethodPost)
 
-	apiRouter := router.PathPrefix("/api/v1").Subrouter()
-
-	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
+	// All other plugin API routes require a valid Mattermost user session.
+	api := router.PathPrefix("/api/v1").Subrouter()
+	api.Use(p.MattermostAuthorizationRequired)
 
 	return router
 }
 
-// ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
-// The root URL is currently <siteUrl>/plugins/com.mattermost.plugin-starter-template/api/v1/. Replace com.mattermost.plugin-starter-template with the plugin ID.
-func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
-	p.router.ServeHTTP(w, r)
-}
-
-func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Header.Get("Mattermost-User-ID")
-		if userID == "" {
-			http.Error(w, "Not authorized", http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
-	if _, err := w.Write([]byte("Hello, world!")); err != nil {
-		p.API.LogError("Failed to write response", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+func (p *Plugin) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
+	secret, err := p.kvstore.GetWebhookSecret()
+	if err != nil || secret == "" {
+		http.Error(w, "webhook not configured", http.StatusServiceUnavailable)
+		return
 	}
+	if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != secret {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var update telegramUpdate
+	if decErr := json.NewDecoder(r.Body).Decode(&update); decErr != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	post := parseUpdate(&update, cetLocation)
+	if post == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	date := post.DateUTC.In(cetLocation).Format("2006-01-02")
+
+	if storeErr := p.kvstore.StorePost(date, post.MessageID, post); storeErr != nil {
+		p.API.LogError("Neil: failed to store post", "message_id", post.MessageID, "error", storeErr.Error())
+	}
+	if idxErr := p.kvstore.AppendToIndex(date, post.MessageID); idxErr != nil {
+		p.API.LogError("Neil: failed to append to index", "message_id", post.MessageID, "error", idxErr.Error())
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
