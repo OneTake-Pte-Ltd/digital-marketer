@@ -1,0 +1,23 @@
+name: Deploy Bunny Edge Script
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "edge-scripts/neil-upload.js"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy Script to Bunny Edge Scripting
+        uses: BunnyWay/actions/deploy-script@main
+        with:
+          script_id: 87710
+          file: "edge-scripts/neil-upload.js"
+          api_key: ${{ secrets.BUNNY_API_KEY }}
