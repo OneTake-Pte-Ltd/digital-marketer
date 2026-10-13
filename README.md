@@ -10,9 +10,9 @@ Neil never touches your inbox or your email tool directly. It posts the finished
 2. Neil's Telegram webhook receives each post and stores it in the Mattermost KV store.
 3. At 06:00 CET, Neil automatically runs the morning processor:
    - Checks that at least one audio or video post was received.
-   - Downloads each media file and uploads it to BunnyCDN via a Bunny Edge Script proxy.
+   - Downloads each audio/video file and uploads it to BunnyCDN via a Bunny Edge Script proxy (retried up to 3 times on temporary errors).
    - Transcribes each audio/video file using ElevenLabs Scribe v2.
-   - Assembles the full day context (transcriptions, photos, links found in posts).
+   - Builds the email only from the audio/video posts that were transcribed successfully. Text and photo posts are ignored, including their links; CTA links come from the audio/video captions or the **Default CTA URL**.
    - Runs a six-step Anthropic Claude pipeline to produce the email.
    - Posts the finished Liquid code to the configured Mattermost channel.
 
@@ -116,7 +116,9 @@ When the pipeline completes, Neil posts three Liquid code blocks to the configur
 
 If no audio or video content was found for the day, Neil posts a warning and stops.
 
-If any step fails (media upload, transcription, or pipeline error), Neil posts a warning with the error details and the step that failed.
+If an audio or video post can't be uploaded or transcribed, Neil posts one warning for that message and writes the email from the other posts. If none of the day's audio or video posts could be transcribed, Neil posts a warning and generates no email.
+
+If a pipeline step fails, Neil posts a warning with the error details and the step that failed.
 
 ## Troubleshooting
 
@@ -124,6 +126,8 @@ If any step fails (media upload, transcription, or pipeline error), Neil posts a
 - The bot is added to the channel as an administrator.
 - The Mattermost site URL is publicly reachable by Telegram's servers.
 - The **Telegram Bot Token** setting is saved; Neil registers the webhook automatically on each configuration save.
+
+**`Media upload failed … status 502 … We could not establish a connection to ….bunny.run`.** Bunny's edge could not reach the Edge Script, so the script is not running. Neil already retried 3 times. Open the **BunnyCDN Edge Script URL** in a browser: a healthy script answers `{"error":"Method not allowed"}`, while the Bunny 502 page confirms the script is down. In the Bunny dashboard, check that the latest version of `edge-scripts/neil-upload.js` is published and look at the script's logs for a startup error. Then replay the date with `/neil run YYYY-MM-DD`; files already uploaded or transcribed are reused.
 
 **Transcription returns empty text.** Verify that the media was uploaded to BunnyCDN successfully (check the Mattermost logs for `Neil: media upload failed`). ElevenLabs Scribe v2 requires a publicly accessible URL.
 

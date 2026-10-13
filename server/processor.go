@@ -98,10 +98,10 @@ func (p *Plugin) RunProcessor(date string) {
 
 	p.API.LogInfo("Neil: loaded posts", "date", date, "count", len(posts))
 
-	// Step 2.2: Check for audio/video content
+	// Step 2.2: Only audio/video posts feed the email; text and photo posts are ignored.
 	var mediaPosts []TelegramPost
 	for _, post := range posts {
-		if post.MessageType == "voice" || post.MessageType == "video" || post.MessageType == "video_note" {
+		if isAudioVideo(post.MessageType) {
 			mediaPosts = append(mediaPosts, post)
 		}
 	}
@@ -120,31 +120,29 @@ func (p *Plugin) RunProcessor(date string) {
 	bunnyClient := newBunnyCDNClient(cfg.BunnyCDNEdgeScriptURL, cfg.BunnyCDNEdgeScriptSecret)
 	elevenClient := newElevenLabsClient(cfg.ElevenLabsAPIKey)
 
-	// Upload all media posts (audio, video, photo)
-	var allMediaPosts []TelegramPost
-	for _, post := range posts {
-		if post.MessageType == "voice" || post.MessageType == "video" || post.MessageType == "video_note" || post.MessageType == "photo" {
-			allMediaPosts = append(allMediaPosts, post)
-		}
-	}
-
-	for _, post := range allMediaPosts {
-		if err := p.uploadAndStoreMedia(tgClient, bunnyClient, date, post); err != nil {
-			p.API.LogError("Neil: media upload failed", "message_id", post.MessageID, "error", err.Error())
-			p.postToChannel(fmt.Sprintf("⚠️ Media upload failed for message %d. Error: %s", post.MessageID, err.Error()))
-		}
-	}
-
-	// Transcribe voice/video posts
+	var transcribed []transcribedPost
 	for _, post := range mediaPosts {
-		if err := p.transcribePost(elevenClient, post, cfg.transcriptionLanguage()); err != nil {
-			p.API.LogError("Neil: transcription failed", "message_id", post.MessageID, "error", err.Error())
-			p.postToChannel(fmt.Sprintf("⚠️ Transcription failed for message %d on %s. Error: %s. Manual intervention required.", post.MessageID, date, err.Error()))
+		text, err := p.transcribeMediaPost(tgClient, bunnyClient, elevenClient, date, post, cfg.transcriptionLanguage())
+		if err != nil {
+			p.API.LogError("Neil: media post skipped", "message_id", post.MessageID, "error", err.Error())
+			p.postToChannel(fmt.Sprintf("⚠️ Message %d (%s) on %s was skipped: %s. Run `/neil run %s` to retry.", post.MessageID, post.MessageType, date, err.Error(), date))
+			continue
 		}
+		transcribed = append(transcribed, transcribedPost{Post: post, Transcription: text})
 	}
 
-	// Step 2.5: Assemble context
-	dayCtx := p.assembleContext(date, posts)
+	if len(transcribed) == 0 {
+		msg := fmt.Sprintf("⚠️ None of the %d audio or video posts for %s could be transcribed. No email generated today. Fix the errors above, then run `/neil run %s`.", len(mediaPosts), date, date)
+		p.postToChannel(msg)
+		status.Status = "failed_no_transcription"
+		status.Error = "no audio or video post could be transcribed"
+		status.UpdatedAt = time.Now()
+		_ = p.kvstore.StoreRunStatus(date, &status)
+		return
+	}
+
+	// Step 2.5: Assemble context from the successfully transcribed posts only
+	dayCtx := buildDayContext(date, transcribed)
 
 	// Step 2.6: Load static assets
 	brandProfile, audienceSegment, avatar, err := p.loadAssets()
@@ -183,15 +181,67 @@ func (p *Plugin) RunProcessor(date string) {
 	p.API.LogInfo("Neil: morning processor completed", "date", date)
 }
 
-func (p *Plugin) uploadAndStoreMedia(tg *telegramClient, bunny *bunnyCDNClient, date string, post TelegramPost) error {
+// isAudioVideo reports whether a post type carries speech that can be transcribed.
+func isAudioVideo(messageType string) bool {
+	return messageType == "voice" || messageType == "video" || messageType == "video_note"
+}
+
+// transcribedPost is an audio/video post together with its transcription.
+type transcribedPost struct {
+	Post          TelegramPost
+	Transcription string
+}
+
+// transcribeMediaPost makes sure the post's media is on the CDN and transcribed, and
+// returns the transcription. Work already stored in the media record (from an earlier
+// run of the same date) is reused, so a replay only redoes the steps that failed.
+func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, el *elevenLabsClient, date string, post TelegramPost, languageCode string) (string, error) {
+	var record MediaRecord
+	if err := p.kvstore.GetMedia(post.MessageID, &record); err != nil {
+		p.API.LogWarn("Neil: failed to read media record, starting fresh", "message_id", post.MessageID, "error", err.Error())
+		record = MediaRecord{}
+	}
+
+	if strings.TrimSpace(record.Transcription) != "" {
+		return record.Transcription, nil
+	}
+
+	if record.BunnyCDNURL == "" {
+		cdnURL, err := p.uploadMedia(tg, bunny, date, post)
+		if err != nil {
+			return "", fmt.Errorf("media upload failed: %w", err)
+		}
+		record.BunnyCDNURL = cdnURL
+		if err := p.kvstore.StoreMedia(post.MessageID, &record); err != nil {
+			p.API.LogWarn("Neil: failed to store media record", "message_id", post.MessageID, "error", err.Error())
+		}
+	}
+
+	text, err := el.Transcribe(record.BunnyCDNURL, languageCode)
+	if err != nil {
+		return "", fmt.Errorf("transcription failed: %w", err)
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("transcription returned no text")
+	}
+
+	record.Transcription = text
+	if err := p.kvstore.StoreMedia(post.MessageID, &record); err != nil {
+		p.API.LogWarn("Neil: failed to store transcription", "message_id", post.MessageID, "error", err.Error())
+	}
+	return text, nil
+}
+
+// uploadMedia fetches the post's file from Telegram and uploads it to BunnyCDN.
+func (p *Plugin) uploadMedia(tg *telegramClient, bunny *bunnyCDNClient, date string, post TelegramPost) (string, error) {
 	fileURL, err := tg.GetFileURL(post.FileID)
 	if err != nil {
-		return fmt.Errorf("getFileURL: %w", err)
+		return "", fmt.Errorf("getFileURL: %w", err)
 	}
 
 	data, contentType, err := tg.DownloadFile(fileURL)
 	if err != nil {
-		return fmt.Errorf("download: %w", err)
+		return "", fmt.Errorf("download: %w", err)
 	}
 
 	ext := extensionForContentType(contentType, post.MessageType)
@@ -199,77 +249,30 @@ func (p *Plugin) uploadAndStoreMedia(tg *telegramClient, bunny *bunnyCDNClient, 
 
 	cdnURL, err := bunny.UploadFile(date, filename, data)
 	if err != nil {
-		return fmt.Errorf("upload: %w", err)
+		return "", fmt.Errorf("upload: %w", err)
 	}
-
-	record := MediaRecord{BunnyCDNURL: cdnURL}
-	return p.kvstore.StoreMedia(post.MessageID, &record)
+	return cdnURL, nil
 }
 
-func (p *Plugin) transcribePost(el *elevenLabsClient, post TelegramPost, languageCode string) error {
-	var record MediaRecord
-	if err := p.kvstore.GetMedia(post.MessageID, &record); err != nil || record.BunnyCDNURL == "" {
-		return fmt.Errorf("media record not found for message %d", post.MessageID)
-	}
-
-	text, err := el.Transcribe(record.BunnyCDNURL, languageCode)
-	if err != nil {
-		return err
-	}
-
-	record.Transcription = text
-	return p.kvstore.StoreMedia(post.MessageID, &record)
-}
-
-func (p *Plugin) assembleContext(date string, posts []TelegramPost) DayContext {
+// buildDayContext assembles the pipeline context from transcribed audio/video posts.
+// CTA links are taken only from these posts' captions.
+func buildDayContext(date string, transcribed []transcribedPost) DayContext {
 	ctx := DayContext{Date: date}
 	ctaLinksSet := map[string]bool{}
 
-	for _, post := range posts {
-		// Collect CTA links from entities
-		for _, e := range post.Entities {
+	for _, tp := range transcribed {
+		for _, e := range tp.Post.Entities {
 			if e.URL != "" && !ctaLinksSet[e.URL] {
 				ctx.CTALinksFound = append(ctx.CTALinksFound, e.URL)
 				ctaLinksSet[e.URL] = true
 			}
 		}
-
-		switch post.MessageType {
-		case "voice", "video", "video_note":
-			var record MediaRecord
-			_ = p.kvstore.GetMedia(post.MessageID, &record)
-			ctx.Transcriptions = append(ctx.Transcriptions, TranscriptionEntry{
-				MessageID:     post.MessageID,
-				Type:          post.MessageType,
-				Transcription: record.Transcription,
-				Caption:       post.Caption,
-			})
-
-		case "photo":
-			var record MediaRecord
-			_ = p.kvstore.GetMedia(post.MessageID, &record)
-			op := OtherPost{
-				MessageID: post.MessageID,
-				Type:      "photo",
-				Caption:   post.Caption,
-				ImageURL:  record.BunnyCDNURL,
-			}
-			ctx.OtherPosts = append(ctx.OtherPosts, op)
-
-		case "text":
-			var links []string
-			for _, e := range post.Entities {
-				if e.URL != "" {
-					links = append(links, e.URL)
-				}
-			}
-			ctx.OtherPosts = append(ctx.OtherPosts, OtherPost{
-				MessageID: post.MessageID,
-				Type:      "text",
-				Text:      post.TextContent,
-				Links:     links,
-			})
-		}
+		ctx.Transcriptions = append(ctx.Transcriptions, TranscriptionEntry{
+			MessageID:     tp.Post.MessageID,
+			Type:          tp.Post.MessageType,
+			Transcription: tp.Transcription,
+			Caption:       tp.Post.Caption,
+		})
 	}
 
 	return ctx

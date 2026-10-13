@@ -28,7 +28,7 @@ type MediaRecord struct {
 
 // RunStatus holds the state of a morning processor run for a given date.
 type RunStatus struct {
-	Status    string    `json:"status"` // started, completed, completed_no_content, failed
+	Status    string    `json:"status"` // started, completed, completed_no_content, failed_no_transcription, failed
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Error     string    `json:"error,omitempty"`
@@ -117,7 +117,8 @@ type telegramEntity struct {
 }
 
 type telegramGetFileResponse struct {
-	OK     bool   `json:"ok"`
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
 	Result struct {
 		FileID   string `json:"file_id"`
 		FilePath string `json:"file_path"`
