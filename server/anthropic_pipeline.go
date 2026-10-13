@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -17,13 +18,15 @@ const maxTokens = 8192
 type anthropicClient struct {
 	apiKey     string
 	model      string
+	endpoint   string
 	httpClient *http.Client
 }
 
 func newAnthropicClient(apiKey, model string) *anthropicClient {
 	return &anthropicClient{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:   apiKey,
+		model:    model,
+		endpoint: anthropicMessagesURL,
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second,
 		},
@@ -72,7 +75,7 @@ func (a *anthropicClient) sendOnce(system, user string) (string, error) {
 		return "", err
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, anthropicMessagesURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, a.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -293,7 +296,9 @@ func stepB(client *anthropicClient, input PipelineInput, ctaBrief string) (strin
 %s
 
 ## Today's Telegram Content
+<telegram_content>
 %s
+</telegram_content>
 
 Instructions:
 - Use the transcription as the raw story material
@@ -313,6 +318,12 @@ Instructions:
 	return client.Send(system, user)
 }
 
+const (
+	stepCMaxIterations = 3
+	stepEMaxAttempts   = 2
+	stepFMaxIterations = 2
+)
+
 func stepC(client *anthropicClient, input PipelineInput, draft string) (string, string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
@@ -322,29 +333,33 @@ func stepC(client *anthropicClient, input PipelineInput, draft string) (string, 
 	}, "\n\n---\n\n")
 
 	current := draft
-	for i := range 3 {
-		user := fmt.Sprintf(`Review this email draft against all 14 checks.
+	for range stepCMaxIterations {
+		user := fmt.Sprintf(`Review the email draft below against all 14 checks.
 For every issue found, provide a specific rewrite.
-Output the corrected version with your verdict (PASS or NEEDS REVISION) at the end.
 
----
-%s`, current)
+Then output the complete corrected email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags. Put only the email inside the tags, with no review notes.
+End your response with a final line: VERDICT: PASS or VERDICT: NEEDS REVISION
+
+<email_draft>
+%s
+</email_draft>`, current)
 
 		result, err := client.Send(system, user)
 		if err != nil {
 			return current, "", err
 		}
 
-		if !strings.Contains(strings.ToUpper(result), "NEEDS REVISION") {
-			return result, "", nil
+		// Only the corrected email is carried forward; review notes are dropped.
+		if revised, ok := extractTagged(result, "revised_email"); ok {
+			current = revised
 		}
 
-		current = result
-		if i == 2 {
-			return current, "⚠️ Email copy review loop reached maximum iterations (3). Proceeding with best available version.", nil
+		verdict := finalVerdict(result)
+		if strings.Contains(verdict, "PASS") && !strings.Contains(verdict, "NEEDS REVISION") {
+			return current, "", nil
 		}
 	}
-	return current, "", nil
+	return current, fmt.Sprintf("⚠️ Email copy review loop reached maximum iterations (%d). Proceeding with best available version.", stepCMaxIterations), nil
 }
 
 func stepD(client *anthropicClient, input PipelineInput, draft string) (string, error) {
@@ -353,14 +368,22 @@ func stepD(client *anthropicClient, input PipelineInput, draft string) (string, 
 		"# Humanize Copy Rules\n" + skillHumanizeCopy,
 	}, "\n\n---\n\n")
 
-	user := fmt.Sprintf(`Review this email for AI writing artefacts and humanize it.
+	user := fmt.Sprintf(`Review the email below for AI writing artefacts and humanize it.
 Remove patterns that mark it as machine-generated. Preserve meaning, structure, and brand voice.
-Output the full revised copy only — no annotations or commentary.
+Output the full revised copy between <humanized_email> and </humanized_email> tags, with no annotations or commentary inside the tags.
 
----
-%s`, draft)
+<email>
+%s
+</email>`, draft)
 
-	return client.Send(system, user)
+	result, err := client.Send(system, user)
+	if err != nil {
+		return "", err
+	}
+	if humanized, ok := extractTagged(result, "humanized_email"); ok {
+		return humanized, nil
+	}
+	return strings.TrimSpace(result), nil
 }
 
 func stepE(client *anthropicClient, input PipelineInput, draft, ctaBrief string) (string, error) {
@@ -369,7 +392,7 @@ func stepE(client *anthropicClient, input PipelineInput, draft, ctaBrief string)
 		"# Liquid Output Rules\n" + skillEmailLiquidOutput,
 	}, "\n\n---\n\n")
 
-	user := fmt.Sprintf(`Convert this email into production-ready Liquid code for UserList.
+	user := fmt.Sprintf(`Convert the email below into production-ready Liquid code for UserList.
 
 Produce three blocks:
 1. Title (subject line)
@@ -392,44 +415,118 @@ Apply all formatting rules:
 - Localized time and currency
 - Informal register in all languages
 
-Email to convert:
----
-%s`,
+Output format: put the three blocks between <liquid_email> and </liquid_email> tags. Inside the tags, each block starts with its heading (### Title, ### Pre-header, ### Message body) followed by its Liquid code in a `+"```liquid"+` fenced code block. Nothing else goes inside the tags.
+
+<email>
+%s
+</email>`,
 		ctaBrief,
 		draft,
 	)
 
-	return client.Send(system, user)
+	var lastErr error
+	for range stepEMaxAttempts {
+		result, err := client.Send(system, user)
+		if err != nil {
+			return "", err
+		}
+		liquid, ok := extractTagged(result, "liquid_email")
+		if !ok {
+			liquid = strings.TrimSpace(result)
+		}
+		if err := validateLiquid(liquid); err != nil {
+			lastErr = err
+			continue
+		}
+		return liquid, nil
+	}
+	return "", fmt.Errorf("output is not usable Liquid after %d attempts: %w", stepEMaxAttempts, lastErr)
 }
 
+// stepF runs the fluency check. liquidOutput must already be valid Liquid (from step E);
+// a fluency pass whose output fails validation is discarded, so the result is always valid.
 func stepF(client *anthropicClient, liquidOutput string) (string, string, error) {
 	system := "# Email Fluency Check Rules\n" + skillEmailFluencyCheck
 
 	current := liquidOutput
-	for i := range 2 {
-		user := fmt.Sprintf(`Review all non-English language versions in this Liquid email block for native fluency.
+	rejected := false
+	for range stepFMaxIterations {
+		user := fmt.Sprintf(`Review all non-English language versions in the Liquid email below for native fluency.
 Flag calques, anglicisms, register drift, or sentence rhythm that betrays translation.
-For each issue, provide a native rewrite. Apply corrections and output the final Liquid.
-End your response with: READY FOR PRODUCTION or REVISIONS REQUIRED
+For each issue, provide a native rewrite.
 
----
-%s`, current)
+Then output the complete corrected Liquid between <final_liquid> and </final_liquid> tags, keeping the exact same structure: the ### Title, ### Pre-header and ### Message body headings, each followed by its `+"```liquid"+` fenced code block. Nothing else goes inside the tags.
+End your response with a final line: VERDICT: READY FOR PRODUCTION or VERDICT: REVISIONS REQUIRED
+
+<liquid_email>
+%s
+</liquid_email>`, current)
 
 		result, err := client.Send(system, user)
 		if err != nil {
 			return current, "", err
 		}
 
-		if strings.Contains(strings.ToUpper(result), "READY FOR PRODUCTION") {
-			return result, "", nil
+		if candidate, ok := extractTagged(result, "final_liquid"); ok && validateLiquid(candidate) == nil {
+			current = candidate
+		} else {
+			rejected = true
 		}
 
-		current = result
-		if i == 1 {
-			return current, "⚠️ Fluency check loop reached maximum iterations (2). Proceeding with best available version.", nil
+		verdict := finalVerdict(result)
+		if strings.Contains(verdict, "READY FOR PRODUCTION") && !strings.Contains(verdict, "REVISIONS REQUIRED") {
+			if rejected {
+				return current, "⚠️ Fluency check returned unusable output at least once; kept the last valid Liquid version.", nil
+			}
+			return current, "", nil
 		}
 	}
-	return current, "", nil
+	return current, fmt.Sprintf("⚠️ Fluency check loop reached maximum iterations (%d). Proceeding with best available version.", stepFMaxIterations), nil
+}
+
+// extractTagged returns the trimmed text between <tag> and the last </tag> in s.
+func extractTagged(s, tag string) (string, bool) {
+	open, closing := "<"+tag+">", "</"+tag+">"
+	start := strings.Index(s, open)
+	if start < 0 {
+		return "", false
+	}
+	start += len(open)
+	end := strings.LastIndex(s, closing)
+	if end < start {
+		return "", false
+	}
+	content := strings.TrimSpace(s[start:end])
+	if content == "" {
+		return "", false
+	}
+	return content, true
+}
+
+// finalVerdict returns the upper-cased text following the last "VERDICT:" in s,
+// or "" when the model gave no verdict line.
+func finalVerdict(s string) string {
+	upper := strings.ToUpper(s)
+	idx := strings.LastIndex(upper, "VERDICT:")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(upper[idx+len("VERDICT:"):])
+}
+
+var liquidCaseRe = regexp.MustCompile(`\{%-?\s*case\s+user\.language\s*-?%\}`)
+
+// validateLiquid checks that s is a Liquid email with a language switch and
+// parseable Title and Message body blocks.
+func validateLiquid(s string) error {
+	if !liquidCaseRe.MatchString(s) || !strings.Contains(s, "endcase") {
+		return fmt.Errorf("missing {%% case user.language %%} switch")
+	}
+	title, _, body := parseLiquidBlocks(s)
+	if title == "" || body == "" || body == strings.TrimSpace(s) {
+		return fmt.Errorf("missing ### Title or ### Message body block")
+	}
+	return nil
 }
 
 // parseLiquidBlocks extracts the three ### Title / ### Pre-header / ### Message body sections
@@ -463,17 +560,17 @@ func parseLiquidBlocks(output string) (title, preHeader, body string) {
 	for _, line := range lines {
 		lower := strings.ToLower(strings.TrimSpace(line))
 
-		if strings.HasPrefix(lower, "###") || strings.HasPrefix(lower, "##") {
+		// Headings inside a code fence are email content (the body may use ## headings).
+		if !inCodeBlock && strings.HasPrefix(lower, "##") {
 			heading := strings.TrimSpace(strings.TrimLeft(lower, "#"))
 			flush()
 			currentSection = nil
 			for key, ptr := range sections {
-				if strings.Contains(heading, key) {
+				if strings.HasPrefix(heading, key) {
 					currentSection = ptr
 					break
 				}
 			}
-			inCodeBlock = false
 			continue
 		}
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 const telegramAPIBase = "https://api.telegram.org/bot%s"
@@ -27,6 +29,16 @@ func (t *telegramClient) apiURL(method string) string {
 	return fmt.Sprintf(telegramAPIBase+"/%s", t.token, method)
 }
 
+// redact removes the bot token from an error message. Go's HTTP errors include the
+// request URL, and Telegram URLs embed the token, so errors must be redacted before
+// they are logged or posted to Mattermost.
+func (t *telegramClient) redact(err error) error {
+	if err == nil || t.token == "" {
+		return err
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), t.token, "<redacted>"))
+}
+
 // SetWebhook registers the plugin's webhook URL with the Telegram Bot API.
 func (t *telegramClient) SetWebhook(webhookURL, secretToken string) error {
 	payload := map[string]string{
@@ -40,7 +52,7 @@ func (t *telegramClient) SetWebhook(webhookURL, secretToken string) error {
 
 	resp, err := t.httpClient.Post(t.apiURL("setWebhook"), "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("setWebhook request failed: %w", err)
+		return fmt.Errorf("setWebhook request failed: %w", t.redact(err))
 	}
 	defer resp.Body.Close()
 
@@ -71,16 +83,16 @@ func (t *telegramClient) DeleteWebhook() error {
 func (t *telegramClient) GetFileURL(fileID string) (string, error) {
 	resp, err := t.httpClient.Get(t.apiURL("getFile") + "?file_id=" + fileID)
 	if err != nil {
-		return "", fmt.Errorf("getFile request failed: %w", err)
+		return "", fmt.Errorf("getFile request failed: %w", t.redact(err))
 	}
 	defer resp.Body.Close()
 
 	var result telegramGetFileResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("getFile decode failed: %w", err)
+		return "", fmt.Errorf("getFile decode failed (status %d): %w", resp.StatusCode, err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("getFile returned not OK for file_id=%s", fileID)
+		return "", fmt.Errorf("getFile failed for file_id=%s: %s", fileID, result.Description)
 	}
 	if result.Result.FilePath == "" {
 		return "", fmt.Errorf("getFile returned empty file_path for file_id=%s", fileID)
@@ -94,9 +106,13 @@ func (t *telegramClient) GetFileURL(fileID string) (string, error) {
 func (t *telegramClient) DownloadFile(fileURL string) ([]byte, string, error) {
 	resp, err := t.httpClient.Get(fileURL)
 	if err != nil {
-		return nil, "", fmt.Errorf("download failed: %w", err)
+		return nil, "", fmt.Errorf("download failed: %w", t.redact(err))
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -134,16 +150,9 @@ func parseUpdate(update *telegramUpdate, cetLoc interface{ String() string }) *T
 		}
 	}
 
-	// Extract bare URLs from text
-	if msg.Text != "" {
-		for _, e := range msg.Entities {
-			if e.Type == "url" && e.Offset+e.Length <= len([]rune(msg.Text)) {
-				runes := []rune(msg.Text)
-				url := string(runes[e.Offset : e.Offset+e.Length])
-				post.Entities = append(post.Entities, TGEntity{Type: "url", URL: url})
-			}
-		}
-	}
+	// Extract bare URLs from text and caption
+	post.Entities = append(post.Entities, bareURLs(msg.Text, msg.Entities)...)
+	post.Entities = append(post.Entities, bareURLs(msg.Caption, msg.CaptionEntities)...)
 
 	// Determine message type and file_id
 	switch {
@@ -165,4 +174,21 @@ func parseUpdate(update *telegramUpdate, cetLoc interface{ String() string }) *T
 	}
 
 	return post
+}
+
+// bareURLs returns the URLs typed directly in text, located by its "url" entities.
+// Telegram entity offsets and lengths are counted in UTF-16 code units.
+func bareURLs(text string, entities []telegramEntity) []TGEntity {
+	if text == "" {
+		return nil
+	}
+	units := utf16.Encode([]rune(text))
+	var out []TGEntity
+	for _, e := range entities {
+		if e.Type == "url" && e.Offset >= 0 && e.Length > 0 && e.Offset+e.Length <= len(units) {
+			url := string(utf16.Decode(units[e.Offset : e.Offset+e.Length]))
+			out = append(out, TGEntity{Type: "url", URL: url})
+		}
+	}
+	return out
 }

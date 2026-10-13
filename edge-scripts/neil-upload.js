@@ -16,8 +16,26 @@
  */
 
 import * as BunnySDK from "@bunny.net/edgescript-sdk";
+import process from "node:process";
 
+function jsonResponse(status, payload) {
+    return new Response(JSON.stringify(payload), {
+        status,
+        headers: { "Content-Type": "application/json" },
+    });
+}
+
+// Any uncaught error is returned as JSON so the plugin can report the real cause
+// instead of an opaque Bunny 502 page.
 BunnySDK.serve(async (request) => {
+    try {
+        return await handleUpload(request);
+    } catch (err) {
+        return jsonResponse(500, { error: `Edge Script error: ${err && err.message ? err.message : String(err)}` });
+    }
+});
+
+async function handleUpload(request) {
     if (request.method !== "PUT") {
         return new Response(JSON.stringify({ error: "Method not allowed" }), {
             status: 405,
@@ -81,4 +99,4 @@ BunnySDK.serve(async (request) => {
         status: 200,
         headers: { "Content-Type": "application/json" },
     });
-});
+}

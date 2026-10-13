@@ -24,7 +24,7 @@ server/
                             OnConfigurationChange (re-registers Telegram webhook on save).
   job.go                    Hourly cluster job; fires processor at 06:00 CET, skips if already run.
   processor.go              RunProcessor: Steps 2.1–2.7 orchestration. Also contains CET helpers,
-                            loadAssets, uploadAndStoreMedia, transcribePost, assembleContext,
+                            loadAssets, transcribeMediaPost, uploadMedia, buildDayContext,
                             postEmailResult, handleProcessorError, extensionForContentType.
   types.go                  All shared structs: TelegramPost, MediaRecord, RunStatus, DayContext,
                             PipelineInput, PipelineResult, raw Telegram API types.
@@ -34,12 +34,16 @@ server/
   telegram.go               telegramClient: SetWebhook, DeleteWebhook, GetFileURL, DownloadFile,
                             parseUpdate (converts raw Telegram update to TelegramPost).
   bunnycdn.go               bunnyCDNClient: UploadFile — PUT to Bunny Edge Script proxy,
-                            returns JSON {"url": "..."}.
+                            returns JSON {"url": "..."}. Retries network errors and 5xx
+                            (3 attempts); summarizeErrorBody shortens HTML error pages.
   elevenlabs.go             elevenLabsClient: Transcribe — multipart POST to ElevenLabs Scribe v2
                             using the public CDN URL.
   anthropic_pipeline.go     anthropicClient (Send with 3-retry backoff), RunPipeline (A–F),
-                            stepA–stepF functions, buildContextSummary, parseLiquidBlocks.
+                            stepA–stepF functions, buildContextSummary, parseLiquidBlocks,
+                            extractTagged, finalVerdict, validateLiquid.
   plugin_test.go            Smoke test: router initializes without panic.
+  anthropic_pipeline_test.go  Steps C/E/F against a fake Anthropic server; Liquid parsing.
+  media_test.go             Bunny retries, token redaction, caption URLs, buildDayContext.
 
   command/
     command.go              /neil run [YYYY-MM-DD] slash command. Accepts Runner interface
@@ -68,7 +72,7 @@ edge-scripts/
 | `tg:post:{YYYY-MM-DD}:{message_id}` | `TelegramPost` JSON | Webhook handler | RunProcessor |
 | `tg:index:{YYYY-MM-DD}` | `[]int64` (ordered message IDs) | Webhook handler | RunProcessor |
 | `run:status:{YYYY-MM-DD}` | `RunStatus` JSON | RunProcessor | runJob (duplicate guard) |
-| `media:{message_id}` | `MediaRecord` JSON (CDN URL + transcription) | uploadAndStoreMedia, transcribePost | assembleContext |
+| `media:{message_id}` | `MediaRecord` JSON (CDN URL + transcription) | transcribeMediaPost | transcribeMediaPost (reuses stored work on replay) |
 | `neil:webhook:secret` | string (hex-encoded 32 bytes) | registerWebhook (once) | handleTelegramWebhook |
 
 The index key uses a 5-attempt optimistic CAS loop (get-modify-set) in `AppendToIndex` to handle concurrent webhook deliveries safely.
@@ -101,12 +105,16 @@ All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClien
 |---|---|---|---|---|
 | A | `stepA` | DayContext, CTALinksFound, DefaultCTAURL | CTA brief (URL, text, placement) | None |
 | B | `stepB` | CTA brief, OfferDescription, DayContext summary, brand/audience/avatar/nurture/storyselling | Storyselling email draft (FR) | None |
-| C | `stepC` | Email draft | Reviewed draft; loops up to 3× until "NEEDS REVISION" absent | Up to 3 iterations |
-| D | `stepD` | Reviewed draft | Humanized draft (AI artefacts removed) | None |
-| E | `stepE` | Humanized draft, CTA brief | Liquid code (6 languages) | None |
-| F | `stepF` | Liquid output | Final Liquid; loops up to 2× until "READY FOR PRODUCTION" | Up to 2 iterations |
+| C | `stepC` | Email draft | Reviewed draft from `<revised_email>`; loops up to 3× until `VERDICT: PASS` | Up to 3 iterations |
+| D | `stepD` | Reviewed draft | Humanized draft from `<humanized_email>` (AI artefacts removed) | None |
+| E | `stepE` | Humanized draft, CTA brief | Liquid code (6 languages) from `<liquid_email>`; must pass `validateLiquid` | 2 attempts, then the run fails |
+| F | `stepF` | Liquid output | Final Liquid from `<final_liquid>`; loops up to 2× until `VERDICT: READY FOR PRODUCTION` | Up to 2 iterations |
 
-`parseLiquidBlocks` extracts the three `### Title`, `### Pre-header`, `### Message body` sections from Step F's output. If parsing fails, the entire output is placed in the body.
+Every step's input is wrapped in XML-style tags and every output is read back from tags with `extractTagged`. Only the extracted content moves to the next step or loop iteration; review notes and verdicts never do. `finalVerdict` reads the text after the last `VERDICT:`.
+
+`validateLiquid` requires a `{%case user.language%}` switch, an `endcase`, and parseable Title and Message body blocks. Step F keeps the last valid version: a fluency pass whose output fails validation is discarded and a warning is posted.
+
+`parseLiquidBlocks` extracts the three `### Title`, `### Pre-header`, `### Message body` sections. Headings inside a code fence are treated as email content, so the body can use `##` subheadings. If parsing fails, the entire output is placed in the body.
 
 ## Telegram Webhook Flow
 
@@ -120,12 +128,17 @@ The webhook route is registered outside the `MattermostAuthorizationRequired` mi
 
 ## Media Upload and Transcription
 
-For each post with `MessageType` of `voice`, `video`, `video_note`, or `photo`:
+Only posts with `MessageType` of `voice`, `video`, or `video_note` are processed; `text` and `photo` posts are ignored, links included. For each one, `transcribeMediaPost`:
 
-1. `uploadAndStoreMedia` fetches the file from Telegram (via `GetFileURL` + `DownloadFile`), uploads it to BunnyCDN via the Edge Script, and writes a `MediaRecord{BunnyCDNURL: ...}` to the KV store.
-2. For `voice`, `video`, and `video_note` only: `transcribePost` reads the `MediaRecord`, sends the CDN URL to ElevenLabs, and writes the transcription back into the same record.
+1. Reads the `MediaRecord`. If it already holds a transcription (from an earlier run of the same date), that transcription is reused.
+2. If there is no CDN URL yet, `uploadMedia` fetches the file from Telegram (via `GetFileURL` + `DownloadFile`), uploads it to BunnyCDN via the Edge Script, and stores the URL.
+3. Sends the CDN URL to ElevenLabs and stores the transcription in the same record. An empty transcription counts as a failure.
+
+A post that fails at any step gets one warning in Mattermost and is left out of the email. `buildDayContext` uses only the successfully transcribed posts, and CTA links come only from their captions. If no post was transcribed, the run stops with status `failed_no_transcription`.
 
 The CDN URL is public. ElevenLabs fetches the file directly from the CDN.
+
+Telegram error messages are passed through `telegramClient.redact` because Go's HTTP errors include the request URL, which embeds the bot token. Telegram entity offsets are UTF-16 code units; `bareURLs` slices accordingly.
 
 ## CET Timezone
 
