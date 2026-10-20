@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -100,27 +99,6 @@ func (t *telegramClient) GetFileURL(fileID string) (string, error) {
 
 	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", t.token, result.Result.FilePath)
 	return downloadURL, nil
-}
-
-// DownloadFile downloads a file from Telegram's servers.
-func (t *telegramClient) DownloadFile(fileURL string) ([]byte, string, error) {
-	resp, err := t.httpClient.Get(fileURL)
-	if err != nil {
-		return nil, "", fmt.Errorf("download failed: %w", t.redact(err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("read failed: %w", err)
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	return data, contentType, nil
 }
 
 // parseUpdate converts a raw Telegram update into a TelegramPost ready for storage.

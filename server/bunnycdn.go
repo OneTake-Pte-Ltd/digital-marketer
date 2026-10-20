@@ -29,7 +29,7 @@ func newBunnyCDNClient(edgeScriptURL, secret string) *bunnyCDNClient {
 	}
 }
 
-// bunnyUploadError is returned by uploadOnce; retryable marks transient failures
+// bunnyUploadError is returned by fetchOnce; retryable marks transient failures
 // (network errors and 5xx responses) worth another attempt.
 type bunnyUploadError struct {
 	msg       string
@@ -38,15 +38,21 @@ type bunnyUploadError struct {
 
 func (e *bunnyUploadError) Error() string { return e.msg }
 
-// UploadFile uploads a file to BunnyCDN via the Edge Script proxy and returns the public CDN URL.
-// Files are stored under /neil/{date}/{filename}. Transient failures are retried with backoff.
-func (b *bunnyCDNClient) UploadFile(date, filename string, data []byte) (string, error) {
-	uploadURL := fmt.Sprintf("%s/upload/neil/%s/%s", b.edgeScriptURL, date, filename)
+// FetchFile asks the Edge Script to download sourceURL and store it on BunnyCDN, and returns
+// the public CDN URL. The file goes straight from Telegram to Bunny without passing through
+// Mattermost. Files are stored under /neil/{date}/{filename}. Transient failures are retried
+// with backoff.
+func (b *bunnyCDNClient) FetchFile(date, filename, sourceURL string) (string, error) {
+	fetchURL := fmt.Sprintf("%s/fetch/neil/%s/%s", b.edgeScriptURL, date, filename)
+	payload, err := json.Marshal(map[string]string{"source_url": sourceURL})
+	if err != nil {
+		return "", fmt.Errorf("encode fetch request: %w", err)
+	}
 
 	delay := b.retryDelay
 	var lastErr *bunnyUploadError
 	for attempt := 1; attempt <= bunnyUploadAttempts; attempt++ {
-		cdnURL, err := b.uploadOnce(uploadURL, data)
+		cdnURL, err := b.fetchOnce(fetchURL, payload)
 		if err == nil {
 			return cdnURL, nil
 		}
@@ -63,28 +69,28 @@ func (b *bunnyCDNClient) UploadFile(date, filename string, data []byte) (string,
 	return "", lastErr
 }
 
-func (b *bunnyCDNClient) uploadOnce(uploadURL string, data []byte) (string, *bunnyUploadError) {
-	req, err := http.NewRequest(http.MethodPut, uploadURL, bytes.NewReader(data))
+func (b *bunnyCDNClient) fetchOnce(fetchURL string, payload []byte) (string, *bunnyUploadError) {
+	req, err := http.NewRequest(http.MethodPost, fetchURL, bytes.NewReader(payload))
 	if err != nil {
-		return "", &bunnyUploadError{msg: fmt.Sprintf("build upload request: %s", err)}
+		return "", &bunnyUploadError{msg: fmt.Sprintf("build fetch request: %s", err)}
 	}
 	req.Header.Set("Authorization", b.edgeScriptSecret)
-	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return "", &bunnyUploadError{msg: fmt.Sprintf("upload request failed: %s", err), retryable: true}
+		return "", &bunnyUploadError{msg: fmt.Sprintf("fetch request failed: %s", err), retryable: true}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", &bunnyUploadError{msg: fmt.Sprintf("read upload response: %s", err), retryable: true}
+		return "", &bunnyUploadError{msg: fmt.Sprintf("read fetch response: %s", err), retryable: true}
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return "", &bunnyUploadError{
-			msg:       fmt.Sprintf("upload failed with status %d: %s", resp.StatusCode, summarizeErrorBody(body)),
+			msg:       fmt.Sprintf("fetch failed with status %d: %s", resp.StatusCode, summarizeErrorBody(body)),
 			retryable: resp.StatusCode >= 500,
 		}
 	}
@@ -93,10 +99,10 @@ func (b *bunnyCDNClient) uploadOnce(uploadURL string, data []byte) (string, *bun
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", &bunnyUploadError{msg: fmt.Sprintf("decode upload response: %s", err)}
+		return "", &bunnyUploadError{msg: fmt.Sprintf("decode fetch response: %s", err)}
 	}
 	if result.URL == "" {
-		return "", &bunnyUploadError{msg: "upload response missing url field"}
+		return "", &bunnyUploadError{msg: "fetch response missing url field"}
 	}
 
 	return result.URL, nil

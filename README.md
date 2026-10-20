@@ -10,7 +10,7 @@ Neil never touches your inbox or your email tool directly. It posts the finished
 2. Neil's Telegram webhook receives each post and stores it in the Mattermost KV store.
 3. At 06:00 CET, Neil automatically runs the morning processor:
    - Checks that at least one audio or video post was received.
-   - Downloads each audio/video file and uploads it to BunnyCDN via a Bunny Edge Script proxy (retried up to 3 times on temporary errors).
+   - Has a Bunny Edge Script fetch each audio/video file straight from Telegram into BunnyCDN storage, so files never pass through the Mattermost server (retried up to 3 times on temporary errors).
    - Transcribes each audio/video file using ElevenLabs Scribe v2.
    - Builds the email only from the audio/video posts that were transcribed successfully. Text and photo posts are ignored, including their links; CTA links come from the audio/video captions or the **Default CTA URL**.
    - Runs a six-step Anthropic Claude pipeline to produce the email.
@@ -48,7 +48,7 @@ This produces `dist/com.onetake.neil-{version}.tar.gz`. Go 1.22+ and Node 16+ ar
 
 ### 2. Deploy the Bunny Edge Script
 
-The Edge Script (`edge-scripts/neil-upload.js`) acts as a secure proxy between Neil and BunnyCDN. It keeps your BunnyCDN API key server-side.
+The Edge Script (`edge-scripts/neil-upload.js`) downloads each media file from Telegram and stores it on BunnyCDN. It keeps your BunnyCDN API key server-side, and it only accepts files from `api.telegram.org`.
 
 1. In the Bunny dashboard, go to **Edge Scripting** and create a new script.
 2. Paste the contents of `edge-scripts/neil-upload.js`.
