@@ -25,16 +25,17 @@ server/
   job.go                    Hourly cluster job; fires processor at 06:00 CET, skips if already run.
   processor.go              RunProcessor: Steps 2.1–2.7 orchestration. Also contains CET helpers,
                             loadAssets, transcribeMediaPost, uploadMedia, buildDayContext,
-                            postEmailResult, handleProcessorError, extensionForContentType.
+                            postEmailResult, handleProcessorError, extensionForFile.
   types.go                  All shared structs: TelegramPost, MediaRecord, RunStatus, DayContext,
                             PipelineInput, PipelineResult, raw Telegram API types.
   skills.go                 Eight Go string constants — one per prompt skill (email principles,
                             CTA, nurture, copy review, humanize copy, Liquid output, fluency check,
                             storyselling framework).
-  telegram.go               telegramClient: SetWebhook, DeleteWebhook, GetFileURL, DownloadFile,
+  telegram.go               telegramClient: SetWebhook, DeleteWebhook, GetFileURL,
                             parseUpdate (converts raw Telegram update to TelegramPost).
-  bunnycdn.go               bunnyCDNClient: UploadFile — PUT to Bunny Edge Script proxy,
-                            returns JSON {"url": "..."}. Retries network errors and 5xx
+  bunnycdn.go               bunnyCDNClient: FetchFile; POSTs the Telegram file URL to the Bunny
+                            Edge Script, which downloads it into storage and returns
+                            JSON {"url": "..."}. Retries network errors and 5xx
                             (3 attempts); summarizeErrorBody shortens HTML error pages.
   elevenlabs.go             elevenLabsClient: Transcribe — multipart POST to ElevenLabs Scribe v2
                             using the public CDN URL.
@@ -61,8 +62,10 @@ assets/
   avatar.md                 Laurent avatar — detailed psychographic profile.
 
 edge-scripts/
-  neil-upload.js            Bunny Edge Script. Validates Authorization header, proxies PUT to
-                            BunnyCDN Storage Zone, returns {"url": "..."}.
+  neil-upload.js            Bunny Edge Script. Validates Authorization header. POST /fetch/{path}
+                            downloads a source_url (api.telegram.org only) into the BunnyCDN
+                            Storage Zone; PUT /upload/{path} (legacy) stores raw bytes.
+                            Both return {"url": "..."}. Deployed by GitHub Actions.
 ```
 
 ## KV Store Key Schema
@@ -131,14 +134,14 @@ The webhook route is registered outside the `MattermostAuthorizationRequired` mi
 Only posts with `MessageType` of `voice`, `video`, or `video_note` are processed; `text` and `photo` posts are ignored, links included. For each one, `transcribeMediaPost`:
 
 1. Reads the `MediaRecord`. If it already holds a transcription (from an earlier run of the same date), that transcription is reused.
-2. If there is no CDN URL yet, `uploadMedia` fetches the file from Telegram (via `GetFileURL` + `DownloadFile`), uploads it to BunnyCDN via the Edge Script, and stores the URL.
+2. If there is no CDN URL yet, `uploadMedia` resolves the Telegram download URL with `GetFileURL` and passes it to the Edge Script (`FetchFile`). The Edge Script downloads the file from Telegram and writes it to BunnyCDN storage, so the file never passes through the Mattermost server. The returned CDN URL is stored. The file extension comes from the Telegram file path (`extensionForFile`).
 3. Sends the CDN URL to ElevenLabs and stores the transcription in the same record. An empty transcription counts as a failure.
 
 A post that fails at any step gets one warning in Mattermost and is left out of the email. `buildDayContext` uses only the successfully transcribed posts, and CTA links come only from their captions. If no post was transcribed, the run stops with status `failed_no_transcription`.
 
 The CDN URL is public. ElevenLabs fetches the file directly from the CDN.
 
-Telegram error messages are passed through `telegramClient.redact` because Go's HTTP errors include the request URL, which embeds the bot token. Telegram entity offsets are UTF-16 code units; `bareURLs` slices accordingly.
+The Telegram file URL embeds the bot token; the Edge Script never echoes it in its error responses. Telegram error messages are passed through `telegramClient.redact` because Go's HTTP errors include the request URL, which embeds the bot token. Telegram entity offsets are UTF-16 code units; `bareURLs` slices accordingly.
 
 ## CET Timezone
 

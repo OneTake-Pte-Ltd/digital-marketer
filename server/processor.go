@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -232,22 +233,17 @@ func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, 
 	return text, nil
 }
 
-// uploadMedia fetches the post's file from Telegram and uploads it to BunnyCDN.
+// uploadMedia resolves the post's Telegram download URL and has the Bunny Edge Script
+// fetch it directly into BunnyCDN storage.
 func (p *Plugin) uploadMedia(tg *telegramClient, bunny *bunnyCDNClient, date string, post TelegramPost) (string, error) {
 	fileURL, err := tg.GetFileURL(post.FileID)
 	if err != nil {
 		return "", fmt.Errorf("getFileURL: %w", err)
 	}
 
-	data, contentType, err := tg.DownloadFile(fileURL)
-	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
-	}
+	filename := fmt.Sprintf("%d%s", post.MessageID, extensionForFile(fileURL, post.MessageType))
 
-	ext := extensionForContentType(contentType, post.MessageType)
-	filename := fmt.Sprintf("%d%s", post.MessageID, ext)
-
-	cdnURL, err := bunny.UploadFile(date, filename, data)
+	cdnURL, err := bunny.FetchFile(date, filename, fileURL)
 	if err != nil {
 		return "", fmt.Errorf("upload: %w", err)
 	}
@@ -332,24 +328,17 @@ func (p *Plugin) handleProcessorError(date string, status *RunStatus, step strin
 	_ = p.kvstore.StoreRunStatus(date, status)
 }
 
-func extensionForContentType(contentType, messageType string) string {
-	switch {
-	case strings.Contains(contentType, "ogg"):
+// extensionForFile returns the file extension for a stored media file. Telegram file
+// paths carry one (e.g. voice/file_3.oga); the message type is the fallback.
+func extensionForFile(fileURL, messageType string) string {
+	if ext := strings.ToLower(path.Ext(fileURL)); ext != "" && len(ext) <= 5 {
+		return ext
+	}
+	switch messageType {
+	case "voice":
 		return ".oga"
-	case strings.Contains(contentType, "webm"):
-		return ".webm"
-	case strings.Contains(contentType, "mp4"):
+	case "video", "video_note":
 		return ".mp4"
-	case strings.Contains(contentType, "jpeg"):
-		return ".jpg"
-	case strings.Contains(contentType, "png"):
-		return ".png"
-	case messageType == "voice":
-		return ".oga"
-	case messageType == "video" || messageType == "video_note":
-		return ".mp4"
-	case messageType == "photo":
-		return ".jpg"
 	default:
 		return ".bin"
 	}

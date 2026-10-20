@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -23,17 +24,25 @@ const bunny502Page = `<!DOCTYPE html>
 </body>
 </html>`
 
+const testTelegramFileURL = "https://api.telegram.org/file/bot123:SECRET/voice/file_3.oga"
+
 func testBunnyClient(url string) *bunnyCDNClient {
 	c := newBunnyCDNClient(url, "secret")
 	c.retryDelay = 0
 	return c
 }
 
-func TestBunnyUploadRetriesTransientErrors(t *testing.T) {
+func TestBunnyFetchRetriesTransientErrors(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "secret", r.Header.Get("Authorization"))
-		assert.Equal(t, "/upload/neil/2026-10-13/120.oga", r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/fetch/neil/2026-10-13/120.oga", r.URL.Path)
+		var body struct {
+			SourceURL string `json:"source_url"`
+		}
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, testTelegramFileURL, body.SourceURL)
 		if calls.Add(1) < 3 {
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(bunny502Page))
@@ -43,13 +52,13 @@ func TestBunnyUploadRetriesTransientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	url, err := testBunnyClient(srv.URL).UploadFile("2026-10-13", "120.oga", []byte("audio"))
+	url, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
 	require.NoError(t, err)
 	assert.Equal(t, "https://cdn.example/neil/2026-10-13/120.oga", url)
 	assert.Equal(t, int32(3), calls.Load())
 }
 
-func TestBunnyUploadGivesUpWithReadableError(t *testing.T) {
+func TestBunnyFetchGivesUpWithReadableError(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -58,7 +67,7 @@ func TestBunnyUploadGivesUpWithReadableError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testBunnyClient(srv.URL).UploadFile("2026-10-13", "120.oga", []byte("audio"))
+	_, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
 	require.Error(t, err)
 	assert.Equal(t, int32(bunnyUploadAttempts), calls.Load())
 	assert.Contains(t, err.Error(), "status 502")
@@ -68,7 +77,7 @@ func TestBunnyUploadGivesUpWithReadableError(t *testing.T) {
 	assert.NotContains(t, err.Error(), "jquery")
 }
 
-func TestBunnyUploadDoesNotRetryClientErrors(t *testing.T) {
+func TestBunnyFetchDoesNotRetryClientErrors(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -77,10 +86,17 @@ func TestBunnyUploadDoesNotRetryClientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testBunnyClient(srv.URL).UploadFile("2026-10-13", "120.oga", []byte("audio"))
+	_, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
 	require.Error(t, err)
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Contains(t, err.Error(), "Unauthorized")
+}
+
+func TestExtensionForFile(t *testing.T) {
+	assert.Equal(t, ".oga", extensionForFile(testTelegramFileURL, "voice"))
+	assert.Equal(t, ".mp4", extensionForFile("https://api.telegram.org/file/botX/videos/file_5.MP4", "video"))
+	assert.Equal(t, ".mp4", extensionForFile("https://api.telegram.org/file/botX/video_notes/file_2", "video_note"))
+	assert.Equal(t, ".oga", extensionForFile("https://api.telegram.org/file/botX/voice/file_2", "voice"))
 }
 
 func TestSummarizeErrorBodyTruncates(t *testing.T) {
