@@ -50,8 +50,8 @@ This produces `dist/com.onetake.neil-{version}.tar.gz`. Go 1.22+ and Node 16+ ar
 
 The Edge Script (`edge-scripts/neil-upload.js`) downloads each media file from Telegram and stores it on BunnyCDN. It keeps your BunnyCDN API key server-side, and it only accepts files from `api.telegram.org`.
 
-1. In the Bunny dashboard, go to **Edge Scripting** and create a new script.
-2. Paste the contents of `edge-scripts/neil-upload.js`.
+1. In the Bunny dashboard, go to **Edge Scripting** and create a new script. Its ID (currently `87710`) is set in `.github/workflows/deploy-bunny-edge-script.yml`.
+2. Connect this GitHub repository to Bunny (**Settings → Connected Repositories**). The workflow deploys `edge-scripts/neil-upload.js` on every push to `master` that changes it; you can also run it by hand from the **Actions** tab (**Deploy Neil Edge Script to Bunny → Run workflow**).
 3. Set the following environment variables in the script settings:
 
 | Variable | Description |
@@ -62,7 +62,7 @@ The Edge Script (`edge-scripts/neil-upload.js`) downloads each media file from T
 | `STORAGE_HOSTNAME` | e.g. `storage.bunnycdn.com` for EU; `de.storage.bunnycdn.com` for Germany |
 | `CDN_HOSTNAME` | Your pull zone hostname, e.g. `assets.example.b-cdn.net` |
 
-4. Note the Edge Script's pull zone URL — paste it into the **BunnyCDN Edge Script URL** plugin setting.
+4. Note the Edge Script's URL (currently `https://neil-mattermost-marketing-bot-2kddw.bunny.run`) and paste it into the **BunnyCDN Edge Script URL** plugin setting.
 
 ### 3. Configure the Plugin
 
