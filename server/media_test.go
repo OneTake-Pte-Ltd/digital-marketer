@@ -99,6 +99,10 @@ func TestExtensionForFile(t *testing.T) {
 	assert.Equal(t, ".oga", extensionForFile("https://api.telegram.org/file/botX/voice/file_2", "voice"))
 }
 
+func TestSummarizeErrorBodyEmpty(t *testing.T) {
+	assert.Equal(t, "(empty response body)", summarizeErrorBody([]byte(" \n")))
+}
+
 func TestSummarizeErrorBodyTruncates(t *testing.T) {
 	out := summarizeErrorBody([]byte(strings.Repeat("x", 1000)))
 	assert.Equal(t, maxErrorBodyLen+1, len([]rune(out)))
