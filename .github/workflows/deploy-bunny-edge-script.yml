@@ -1,0 +1,34 @@
+# Deploys edge-scripts/neil-upload.js to Bunny Edge Scripting (script 87710,
+# https://neil-mattermost-marketing-bot-2kddw.bunny.run/).
+#
+# Authentication: GitHub OIDC through the repository connection set up in the
+# Bunny dashboard. No API key required.
+#
+# Runs when the script or this workflow changes on master, or manually from the
+# Actions tab ("Run workflow").
+
+name: Deploy Neil Edge Script to Bunny
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "edge-scripts/neil-upload.js"
+      - ".github/workflows/deploy-bunny-edge-script.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Script to Bunny Edge Scripting
+        uses: BunnyWay/actions/deploy-script@main
+        with:
+          script_id: 87710
+          file: "edge-scripts/neil-upload.js"

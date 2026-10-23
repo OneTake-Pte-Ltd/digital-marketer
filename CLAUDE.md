@@ -65,7 +65,8 @@ edge-scripts/
   neil-upload.js            Bunny Edge Script. Validates Authorization header. POST /fetch/{path}
                             downloads a source_url (api.telegram.org only) into the BunnyCDN
                             Storage Zone; PUT /upload/{path} (legacy) stores raw bytes.
-                            Both return {"url": "..."}. Deployed by GitHub Actions.
+                            Both return {"url": "..."}. Deployed to Bunny script 87710 by
+                            .github/workflows/deploy-bunny-edge-script.yml.
 ```
 
 ## KV Store Key Schema
