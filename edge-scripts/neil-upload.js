@@ -23,7 +23,7 @@
  *   CDN_HOSTNAME         Pull zone hostname, e.g. assets.example.b-cdn.net (no trailing slash)
  */
 
-import * as BunnySDK from "@bunny.net/edgescript-sdk";
+import * as BunnySDK from "https://esm.sh/@bunny.net/edgescript-sdk@0.11.2";
 import process from "node:process";
 
 // Only Telegram file downloads may be fetched, so the script cannot be used as an open proxy.
@@ -38,7 +38,7 @@ function jsonResponse(status, payload) {
 
 // Any uncaught error is returned as JSON so the plugin can report the real cause
 // instead of an opaque Bunny 502 page.
-BunnySDK.serve(async (request) => {
+BunnySDK.net.http.serve(async (request) => {
     try {
         return await handleRequest(request);
     } catch (err) {

@@ -124,6 +124,9 @@ func summarizeErrorBody(body []byte) string {
 		text = htmlTagRe.ReplaceAllString(text, " ")
 	}
 	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return "(empty response body)"
+	}
 	if runes := []rune(text); len(runes) > maxErrorBodyLen {
 		text = string(runes[:maxErrorBodyLen]) + "…"
 	}
