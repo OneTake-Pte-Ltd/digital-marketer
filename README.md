@@ -104,9 +104,23 @@ To run it for a specific past date:
 
 You can also trigger it by posting `@neil run` in any Mattermost channel.
 
+A date that isn't in `YYYY-MM-DD` format is refused rather than replaced by yesterday. Only one run per date can be in progress at a time.
+
+To see where the last run for a date got to (without a date, yesterday):
+
+```
+/neil status 2026-10-21
+```
+
+It shows the last step reached, when it was reached, and any error. A run marked "interrupted" stopped without finishing, usually because the plugin restarted (for example after uploading a new build); run it again.
+
 Users listed in **Users to Tag** and Mattermost system admins can run these commands.
 
 ## What Neil Posts
+
+As soon as a run starts, Neil posts a progress message and keeps editing it: one line per step, with the time it started (CET). When the run ends, the first line shows the outcome. If a run goes quiet, this message shows where it stopped.
+
+A run is stopped after 45 minutes. Neil then posts which step it was on; replaying the date reuses the transcriptions already done.
 
 When the pipeline completes, Neil posts three Liquid code blocks to the configured channel:
 
@@ -118,7 +132,7 @@ If no audio or video content was found for the day, Neil posts a warning and sto
 
 If an audio or video post can't be uploaded or transcribed, Neil posts one warning for that message and writes the email from the other posts. If none of the day's audio or video posts could be transcribed, Neil posts a warning and generates no email.
 
-If a pipeline step fails, Neil posts a warning with the error details and the step that failed.
+If a pipeline step fails, Neil posts a warning with the error details and the step that failed. An unexpected error in Neil's code is caught and reported the same way instead of crashing the plugin.
 
 ## Troubleshooting
 

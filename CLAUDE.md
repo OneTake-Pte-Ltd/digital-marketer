@@ -25,7 +25,12 @@ server/
   job.go                    Hourly cluster job; fires processor at 06:00 CET, skips if already run.
   processor.go              RunProcessor: Steps 2.1–2.7 orchestration. Also contains CET helpers,
                             loadAssets, transcribeMediaPost, uploadMedia, buildDayContext,
-                            postEmailResult, handleProcessorError, extensionForFile.
+                            postEmailResult, handleProcessorError, stopRun, extensionForFile.
+                            Each run has a 45-minute context (processorTimeout), recovers
+                            from panics, and holds its date in Plugin.runningDates.
+  progress.go               runProgress: one Mattermost post per run, edited at each step;
+                            mirrors the step into RunStatus.Step. RunStatusReport and
+                            formatRunStatus back /neil status.
   types.go                  All shared structs: TelegramPost, MediaRecord, RunStatus, DayContext,
                             PipelineInput, PipelineResult, raw Telegram API types.
   skills.go                 Eight Go string constants — one per prompt skill (email principles,
@@ -43,12 +48,15 @@ server/
                             stepA–stepF functions, buildContextSummary, parseLiquidBlocks,
                             extractTagged, finalVerdict, validateLiquid.
   plugin_test.go            Smoke test: router initializes without panic.
+  processor_test.go         RunProcessor against a fake KV store and mock API: progress post,
+                            panic recovery, one run per date.
   anthropic_pipeline_test.go  Steps C/E/F against a fake Anthropic server; Liquid parsing.
   media_test.go             Bunny retries, token redaction, caption URLs, buildDayContext.
 
   command/
-    command.go              /neil run [YYYY-MM-DD] slash command. Accepts Runner interface
-                            (implemented by Plugin) to call RunProcessor.
+    command.go              /neil run|status [YYYY-MM-DD] slash command. Rejects malformed dates.
+                            Accepts Runner interface (implemented by Plugin: RunProcessor,
+                            RunStatusReport).
     command_test.go         Unit tests for command parsing.
     mocks/mock_commands.go  MockCommand for use in plugin-level tests.
 
@@ -75,7 +83,7 @@ edge-scripts/
 |---|---|---|---|
 | `tg:post:{YYYY-MM-DD}:{message_id}` | `TelegramPost` JSON | Webhook handler | RunProcessor |
 | `tg:index:{YYYY-MM-DD}` | `[]int64` (ordered message IDs) | Webhook handler | RunProcessor |
-| `run:status:{YYYY-MM-DD}` | `RunStatus` JSON | RunProcessor | runJob (duplicate guard) |
+| `run:status:{YYYY-MM-DD}` | `RunStatus` JSON (status, last step, error) | RunProcessor, runProgress | runJob (duplicate guard), /neil status |
 | `media:{message_id}` | `MediaRecord` JSON (CDN URL + transcription) | transcribeMediaPost | transcribeMediaPost (reuses stored work on replay) |
 | `neil:webhook:secret` | string (hex-encoded 32 bytes) | registerWebhook (once) | handleTelegramWebhook |
 
@@ -103,7 +111,7 @@ All fields map 1:1 to `plugin.json` settings. Access via `p.getConfiguration()` 
 
 ## Email Pipeline (Steps A–F)
 
-All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(system, user)` with exponential backoff (3 attempts, 2s/4s delays).
+All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. `RunPipeline` calls its `progress` callback as each step starts.
 
 | Step | Function | Input | Output | Retries |
 |---|---|---|---|---|
@@ -172,7 +180,9 @@ To change the morning run time:
 
 **Update the offer description without redeploying:** Change the **Offer Description** setting in System Console. It is injected into Step B at run time.
 
-**Replay a past date:** Run `/neil run 2025-01-15`. The processor accepts any date string in `YYYY-MM-DD` format; an empty string defaults to yesterday.
+**Replay a past date:** Run `/neil run 2025-01-15`. The command rejects anything that isn't `YYYY-MM-DD`; no date means yesterday.
+
+**Find out why a run went quiet:** Run `/neil status 2025-01-15`. A status of `started` with no run active in this process is reported as interrupted (the plugin restarted mid-run).
 
 **Rotate the BunnyCDN secret:** Update `UPLOAD_SECRET` in the Bunny Edge Script dashboard and the **BunnyCDN Edge Script Secret** setting in Mattermost. Changes take effect immediately on the next processor run.
 

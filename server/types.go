@@ -28,7 +28,8 @@ type MediaRecord struct {
 
 // RunStatus holds the state of a morning processor run for a given date.
 type RunStatus struct {
-	Status    string    `json:"status"` // started, completed, completed_no_content, failed_no_transcription, failed
+	Status    string    `json:"status"`         // started, completed, completed_no_content, failed_no_transcription, failed, failed_timeout
+	Step      string    `json:"step,omitempty"` // the step the run reached last
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Error     string    `json:"error,omitempty"`

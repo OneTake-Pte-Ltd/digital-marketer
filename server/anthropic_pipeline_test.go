@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -77,7 +78,7 @@ func TestStepFKeepsValidLiquidWhenReviewerReturnsGarbage(t *testing.T) {
 	complaint := "You've caught something worth naming directly.\n## What Just Happened\nThere is nothing to fluency-check."
 	client, prompts := fakeAnthropic(t, complaint, complaint)
 
-	out, warning, err := stepF(client, validLiquid)
+	out, warning, err := stepF(context.Background(), client, validLiquid)
 	require.NoError(t, err)
 	assert.Equal(t, validLiquid, out)
 	assert.Contains(t, warning, "maximum iterations")
@@ -91,7 +92,7 @@ func TestStepFUsesCorrectedLiquid(t *testing.T) {
 	corrected := strings.Replace(validLiquid, "Corps", "Corps corrigé", 1)
 	client, _ := fakeAnthropic(t, "French: NEEDS REVISION\n<final_liquid>\n"+corrected+"\n</final_liquid>\nVERDICT: READY FOR PRODUCTION")
 
-	out, warning, err := stepF(client, validLiquid)
+	out, warning, err := stepF(context.Background(), client, validLiquid)
 	require.NoError(t, err)
 	assert.Equal(t, corrected, out)
 	assert.Empty(t, warning)
@@ -103,7 +104,7 @@ func TestStepCCarriesOnlyTheRevisedEmail(t *testing.T) {
 		"All good.\n<revised_email>\nObjet : version 3\n</revised_email>\nVERDICT: PASS",
 	)
 
-	out, warning, err := stepC(client, PipelineInput{}, "Objet : version 1")
+	out, warning, err := stepC(context.Background(), client, PipelineInput{}, "Objet : version 1")
 	require.NoError(t, err)
 	assert.Equal(t, "Objet : version 3", out)
 	assert.Empty(t, warning)
@@ -114,13 +115,80 @@ func TestStepCCarriesOnlyTheRevisedEmail(t *testing.T) {
 
 func TestStepERejectsNonLiquid(t *testing.T) {
 	client, _ := fakeAnthropic(t, "Please paste the email.", "Still no email.")
-	_, err := stepE(client, PipelineInput{}, "draft", "brief")
+	_, err := stepE(context.Background(), client, PipelineInput{}, "draft", "brief")
 	assert.Error(t, err)
 }
 
 func TestStepERetriesOnce(t *testing.T) {
 	client, _ := fakeAnthropic(t, "Please paste the email.", "<liquid_email>\n"+validLiquid+"\n</liquid_email>")
-	out, err := stepE(client, PipelineInput{}, "draft", "brief")
+	out, err := stepE(context.Background(), client, PipelineInput{}, "draft", "brief")
 	require.NoError(t, err)
 	assert.Equal(t, validLiquid, out)
+}
+
+// fakeAnthropicStatus answers every request with the given status code and body, and counts calls.
+func fakeAnthropicStatus(t *testing.T, code int, body string) (*anthropicClient, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	c := newAnthropicClient("key", "model")
+	c.endpoint = srv.URL
+	return c, &calls
+}
+
+func TestSendDoesNotRetryCutOffAnswer(t *testing.T) {
+	client, calls := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"max_tokens","content":[{"type":"text","text":"half an ema"}]}`)
+	_, err := client.Send(context.Background(), "system", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cut off")
+	assert.Equal(t, 1, *calls)
+}
+
+func TestSendDoesNotRetryClientError(t *testing.T) {
+	client, calls := fakeAnthropicStatus(t, http.StatusBadRequest, `{"error":{"message":"bad request"}}`)
+	_, err := client.Send(context.Background(), "system", "user")
+	require.Error(t, err)
+	assert.Equal(t, 1, *calls)
+}
+
+func TestSendStopsRetryingWhenContextEnds(t *testing.T) {
+	client, calls := fakeAnthropicStatus(t, http.StatusServiceUnavailable, "overloaded")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.Send(ctx, "system", "user")
+	require.Error(t, err)
+	assert.LessOrEqual(t, *calls, 1)
+}
+
+func TestRunPipelineReportsEachStep(t *testing.T) {
+	client, _ := fakeAnthropic(t,
+		"CTA brief",
+		"Objet : brouillon",
+		"<revised_email>Objet : revu</revised_email>\nVERDICT: PASS",
+		"<humanized_email>Objet : humain</humanized_email>",
+		"<liquid_email>"+validLiquid+"</liquid_email>",
+		"<final_liquid>"+validLiquid+"</final_liquid>\nVERDICT: READY FOR PRODUCTION",
+	)
+	var steps []string
+	result, err := RunPipeline(context.Background(), client, PipelineInput{}, func(step string) { steps = append(steps, step) })
+	require.NoError(t, err)
+	assert.Contains(t, result.TitleLiquid, "Bonjour")
+	require.Len(t, steps, 6)
+	assert.True(t, strings.HasPrefix(steps[0], "Step A"))
+	assert.True(t, strings.HasPrefix(steps[5], "Step F"))
+}
+
+func TestStepFKeepsValidLiquidWhenAnswerIsCutOff(t *testing.T) {
+	client, calls := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"max_tokens","content":[{"type":"text","text":"<final_liquid>### Ti"}]}`)
+
+	out, warning, err := stepF(context.Background(), client, validLiquid)
+	require.NoError(t, err)
+	assert.Equal(t, validLiquid, out)
+	assert.NotEmpty(t, warning)
+	assert.Equal(t, stepFMaxIterations, *calls)
 }

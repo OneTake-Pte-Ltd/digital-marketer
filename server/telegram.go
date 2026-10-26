@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -79,8 +80,12 @@ func (t *telegramClient) DeleteWebhook() error {
 }
 
 // GetFileURL resolves a file_id to a download URL.
-func (t *telegramClient) GetFileURL(fileID string) (string, error) {
-	resp, err := t.httpClient.Get(t.apiURL("getFile") + "?file_id=" + fileID)
+func (t *telegramClient) GetFileURL(ctx context.Context, fileID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.apiURL("getFile")+"?file_id="+fileID, nil)
+	if err != nil {
+		return "", fmt.Errorf("build getFile request: %w", t.redact(err))
+	}
+	resp, err := t.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("getFile request failed: %w", t.redact(err))
 	}

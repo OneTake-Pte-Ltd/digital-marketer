@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ func newElevenLabsClient(apiKey string) *elevenLabsClient {
 }
 
 // Transcribe sends a public audio/video URL to ElevenLabs Scribe v2 and returns the transcription text.
-func (e *elevenLabsClient) Transcribe(sourceURL, languageCode string) (string, error) {
+func (e *elevenLabsClient) Transcribe(ctx context.Context, sourceURL, languageCode string) (string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 
@@ -42,7 +43,7 @@ func (e *elevenLabsClient) Transcribe(sourceURL, languageCode string) (string, e
 	}
 	w.Close()
 
-	req, err := http.NewRequest(http.MethodPost, elevenLabsSTTURL, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, elevenLabsSTTURL, &buf)
 	if err != nil {
 		return "", fmt.Errorf("build transcription request: %w", err)
 	}

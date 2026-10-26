@@ -34,6 +34,9 @@ type Plugin struct {
 	configuration     *configuration
 
 	botUserID string
+
+	// runningDates holds the dates being processed right now, so a date never runs twice at once.
+	runningDates sync.Map
 }
 
 func (p *Plugin) OnActivate() error {
@@ -117,19 +120,27 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 }
 
 func (p *Plugin) postToChannel(msg string) {
+	p.createChannelPost(msg)
+}
+
+// createChannelPost posts msg to the configured channel and returns the post, or nil on failure.
+func (p *Plugin) createChannelPost(msg string) *model.Post {
 	cfg := p.getConfiguration()
 	if cfg.ChannelID == "" {
 		p.API.LogWarn("Neil: no channel configured, dropping message")
-		return
+		return nil
 	}
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: cfg.ChannelID,
 		Message:   msg,
 	}
-	if _, appErr := p.API.CreatePost(post); appErr != nil {
+	created, appErr := p.API.CreatePost(post)
+	if appErr != nil {
 		p.API.LogError("Neil: failed to post to channel", "error", appErr.Error())
+		return nil
 	}
+	return created
 }
 
 func (p *Plugin) registerWebhook() error {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +54,7 @@ func TestBunnyFetchRetriesTransientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	url, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
+	url, err := testBunnyClient(srv.URL).FetchFile(context.Background(), "2026-10-13", "120.oga", testTelegramFileURL)
 	require.NoError(t, err)
 	assert.Equal(t, "https://cdn.example/neil/2026-10-13/120.oga", url)
 	assert.Equal(t, int32(3), calls.Load())
@@ -67,7 +69,7 @@ func TestBunnyFetchGivesUpWithReadableError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
+	_, err := testBunnyClient(srv.URL).FetchFile(context.Background(), "2026-10-13", "120.oga", testTelegramFileURL)
 	require.Error(t, err)
 	assert.Equal(t, int32(bunnyUploadAttempts), calls.Load())
 	assert.Contains(t, err.Error(), "status 502")
@@ -86,7 +88,7 @@ func TestBunnyFetchDoesNotRetryClientErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testBunnyClient(srv.URL).FetchFile("2026-10-13", "120.oga", testTelegramFileURL)
+	_, err := testBunnyClient(srv.URL).FetchFile(context.Background(), "2026-10-13", "120.oga", testTelegramFileURL)
 	require.Error(t, err)
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Contains(t, err.Error(), "Unauthorized")
@@ -146,4 +148,18 @@ func TestBuildDayContextUsesOnlyTranscribedPosts(t *testing.T) {
 	assert.Equal(t, "bonjour", ctx.Transcriptions[0].Transcription)
 	assert.Empty(t, ctx.OtherPosts)
 	assert.Equal(t, []string{"https://a.example"}, ctx.CTALinksFound)
+}
+
+func TestFormatRunStatusFlagsInterruptedRun(t *testing.T) {
+	started := time.Date(2026, 10, 26, 12, 5, 0, 0, time.UTC)
+	status := RunStatus{Status: "started", Step: "Step E: translating into 6 languages (Liquid)", StartedAt: started, UpdatedAt: started.Add(20 * time.Minute)}
+
+	out := formatRunStatus("2026-10-21", status, false, started.Add(90*time.Minute))
+	assert.Contains(t, out, "interrupted")
+	assert.Contains(t, out, "/neil run 2026-10-21")
+	assert.Contains(t, out, "Last step: Step E")
+	assert.Contains(t, out, "1h10m0s ago")
+	assert.Contains(t, out, "13:05 CET")
+
+	assert.Contains(t, formatRunStatus("2026-10-21", status, true, started.Add(25*time.Minute)), "in progress")
 }
