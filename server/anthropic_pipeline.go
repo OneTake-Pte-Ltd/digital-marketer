@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +15,10 @@ import (
 
 const anthropicMessagesURL = "https://api.anthropic.com/v1/messages"
 const anthropicVersion = "2023-06-01"
-const maxTokens = 8192
+
+// maxTokens leaves room for the six-language Liquid of steps E and F plus review notes.
+// It stays at the level recommended for non-streaming requests.
+const maxTokens = 16000
 
 type anthropicClient struct {
 	apiKey     string
@@ -28,7 +33,7 @@ func newAnthropicClient(apiKey, model string) *anthropicClient {
 		model:    model,
 		endpoint: anthropicMessagesURL,
 		httpClient: &http.Client{
-			Timeout: 300 * time.Second,
+			Timeout: 10 * time.Minute,
 		},
 	}
 }
@@ -46,7 +51,8 @@ type anthropicMessage struct {
 }
 
 type anthropicResponse struct {
-	Content []struct {
+	StopReason string `json:"stop_reason"`
+	Content    []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -55,14 +61,23 @@ type anthropicResponse struct {
 	} `json:"error"`
 }
 
+// errAnswerCutOff means the answer hit maxTokens before it was finished.
+var errAnswerCutOff = errors.New("answer was cut off at the token limit")
+
+// permanentError marks a failure that sending the same request again cannot fix.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
 // Send sends a single message to the Anthropic API with retry on transient errors.
-func (a *anthropicClient) Send(system, user string) (string, error) {
-	return retryWithBackoff(3, func() (string, error) {
-		return a.sendOnce(system, user)
+func (a *anthropicClient) Send(ctx context.Context, system, user string) (string, error) {
+	return retryWithBackoff(ctx, 3, func() (string, error) {
+		return a.sendOnce(ctx, system, user)
 	})
 }
 
-func (a *anthropicClient) sendOnce(system, user string) (string, error) {
+func (a *anthropicClient) sendOnce(ctx context.Context, system, user string) (string, error) {
 	req := anthropicRequest{
 		Model:     a.model,
 		MaxTokens: maxTokens,
@@ -75,7 +90,7 @@ func (a *anthropicClient) sendOnce(system, user string) (string, error) {
 		return "", err
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, a.endpoint, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -97,6 +112,9 @@ func (a *anthropicClient) sendOnce(system, user string) (string, error) {
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 		return "", fmt.Errorf("retryable error status %d: %s", resp.StatusCode, string(respBody))
 	}
+	if resp.StatusCode >= 400 {
+		return "", &permanentError{fmt.Errorf("error status %d: %s", resp.StatusCode, string(respBody))}
+	}
 
 	var result anthropicResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -105,6 +123,9 @@ func (a *anthropicClient) sendOnce(system, user string) (string, error) {
 	if result.Error != nil {
 		return "", fmt.Errorf("API error: %s", result.Error.Message)
 	}
+	if result.StopReason == "max_tokens" {
+		return "", &permanentError{fmt.Errorf("%w (%d tokens)", errAnswerCutOff, maxTokens)}
+	}
 	if len(result.Content) == 0 {
 		return "", fmt.Errorf("empty response from API")
 	}
@@ -112,8 +133,9 @@ func (a *anthropicClient) sendOnce(system, user string) (string, error) {
 	return result.Content[0].Text, nil
 }
 
-// retryWithBackoff retries fn up to maxAttempts times with exponential backoff.
-func retryWithBackoff(maxAttempts int, fn func() (string, error)) (string, error) {
+// retryWithBackoff retries fn up to maxAttempts times with exponential backoff. It stops
+// early on a permanentError or when ctx ends.
+func retryWithBackoff(ctx context.Context, maxAttempts int, fn func() (string, error)) (string, error) {
 	var lastErr error
 	delay := 2 * time.Second
 	for i := range maxAttempts {
@@ -122,32 +144,54 @@ func retryWithBackoff(maxAttempts int, fn func() (string, error)) (string, error
 			return result, nil
 		}
 		lastErr = err
+		var permanent *permanentError
+		if errors.As(err, &permanent) || ctx.Err() != nil {
+			break
+		}
 		if i < maxAttempts-1 {
-			time.Sleep(delay)
+			if sleepContext(ctx, delay) != nil {
+				break
+			}
 			delay *= 2
 		}
 	}
 	return "", lastErr
 }
 
+// sleepContext waits for d, or returns ctx's error if ctx ends first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // RunPipeline executes all six email pipeline steps and returns the final Liquid output.
-func RunPipeline(client *anthropicClient, input PipelineInput) (*PipelineResult, error) {
+// progress is called as each step starts.
+func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInput, progress func(step string)) (*PipelineResult, error) {
 	var warnings []string
 
 	// Step A: Define the CTA
-	ctaBrief, err := stepA(client, input)
+	progress("Step A: choosing the call to action")
+	ctaBrief, err := stepA(ctx, client, input)
 	if err != nil {
 		return nil, fmt.Errorf("step A (CTA): %w", err)
 	}
 
 	// Step B: Write the storyselling email
-	emailDraft, err := stepB(client, input, ctaBrief)
+	progress("Step B: writing the email")
+	emailDraft, err := stepB(ctx, client, input, ctaBrief)
 	if err != nil {
 		return nil, fmt.Errorf("step B (write email): %w", err)
 	}
 
 	// Step C: Review the draft (up to 3 iterations)
-	reviewedDraft, reviewWarning, err := stepC(client, input, emailDraft)
+	progress("Step C: reviewing the draft")
+	reviewedDraft, reviewWarning, err := stepC(ctx, client, input, emailDraft)
 	if err != nil {
 		return nil, fmt.Errorf("step C (review): %w", err)
 	}
@@ -156,19 +200,22 @@ func RunPipeline(client *anthropicClient, input PipelineInput) (*PipelineResult,
 	}
 
 	// Step D: Humanize the copy
-	humanizedDraft, err := stepD(client, input, reviewedDraft)
+	progress("Step D: humanizing the copy")
+	humanizedDraft, err := stepD(ctx, client, input, reviewedDraft)
 	if err != nil {
 		return nil, fmt.Errorf("step D (humanize): %w", err)
 	}
 
 	// Step E: Produce Liquid output
-	liquidOutput, err := stepE(client, input, humanizedDraft, ctaBrief)
+	progress("Step E: translating into 6 languages (Liquid)")
+	liquidOutput, err := stepE(ctx, client, input, humanizedDraft, ctaBrief)
 	if err != nil {
 		return nil, fmt.Errorf("step E (liquid): %w", err)
 	}
 
 	// Step F: Fluency check (up to 2 iterations)
-	finalLiquid, fluencyWarning, err := stepF(client, liquidOutput)
+	progress("Step F: checking translation fluency")
+	finalLiquid, fluencyWarning, err := stepF(ctx, client, liquidOutput)
 	if err != nil {
 		return nil, fmt.Errorf("step F (fluency): %w", err)
 	}
@@ -234,7 +281,7 @@ func buildContextSummary(input PipelineInput) string {
 	return sb.String()
 }
 
-func stepA(client *anthropicClient, input PipelineInput) (string, error) {
+func stepA(ctx context.Context, client *anthropicClient, input PipelineInput) (string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
 		"# Audience Segment\n" + input.AudienceSegment,
@@ -274,10 +321,10 @@ Output only the CTA brief.`,
 		}(),
 	)
 
-	return client.Send(system, user)
+	return client.Send(ctx, system, user)
 }
 
-func stepB(client *anthropicClient, input PipelineInput, ctaBrief string) (string, error) {
+func stepB(ctx context.Context, client *anthropicClient, input PipelineInput, ctaBrief string) (string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
 		"# Audience Segment\n" + input.AudienceSegment,
@@ -315,7 +362,7 @@ Instructions:
 		buildContextSummary(input),
 	)
 
-	return client.Send(system, user)
+	return client.Send(ctx, system, user)
 }
 
 const (
@@ -324,7 +371,7 @@ const (
 	stepFMaxIterations = 2
 )
 
-func stepC(client *anthropicClient, input PipelineInput, draft string) (string, string, error) {
+func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
 		"# Audience Segment\n" + input.AudienceSegment,
@@ -344,7 +391,11 @@ End your response with a final line: VERDICT: PASS or VERDICT: NEEDS REVISION
 %s
 </email_draft>`, current)
 
-		result, err := client.Send(system, user)
+		result, err := client.Send(ctx, system, user)
+		if errors.Is(err, errAnswerCutOff) {
+			// A review too long to finish is skipped; the current draft stays.
+			continue
+		}
 		if err != nil {
 			return current, "", err
 		}
@@ -362,7 +413,7 @@ End your response with a final line: VERDICT: PASS or VERDICT: NEEDS REVISION
 	return current, fmt.Sprintf("⚠️ Email copy review loop reached maximum iterations (%d). Proceeding with best available version.", stepCMaxIterations), nil
 }
 
-func stepD(client *anthropicClient, input PipelineInput, draft string) (string, error) {
+func stepD(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile (Voice Section)\n" + input.BrandProfile,
 		"# Humanize Copy Rules\n" + skillHumanizeCopy,
@@ -376,7 +427,7 @@ Output the full revised copy between <humanized_email> and </humanized_email> ta
 %s
 </email>`, draft)
 
-	result, err := client.Send(system, user)
+	result, err := client.Send(ctx, system, user)
 	if err != nil {
 		return "", err
 	}
@@ -386,7 +437,7 @@ Output the full revised copy between <humanized_email> and </humanized_email> ta
 	return strings.TrimSpace(result), nil
 }
 
-func stepE(client *anthropicClient, input PipelineInput, draft, ctaBrief string) (string, error) {
+func stepE(ctx context.Context, client *anthropicClient, input PipelineInput, draft, ctaBrief string) (string, error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
 		"# Liquid Output Rules\n" + skillEmailLiquidOutput,
@@ -426,7 +477,7 @@ Output format: put the three blocks between <liquid_email> and </liquid_email> t
 
 	var lastErr error
 	for range stepEMaxAttempts {
-		result, err := client.Send(system, user)
+		result, err := client.Send(ctx, system, user)
 		if err != nil {
 			return "", err
 		}
@@ -445,7 +496,7 @@ Output format: put the three blocks between <liquid_email> and </liquid_email> t
 
 // stepF runs the fluency check. liquidOutput must already be valid Liquid (from step E);
 // a fluency pass whose output fails validation is discarded, so the result is always valid.
-func stepF(client *anthropicClient, liquidOutput string) (string, string, error) {
+func stepF(ctx context.Context, client *anthropicClient, liquidOutput string) (string, string, error) {
 	system := "# Email Fluency Check Rules\n" + skillEmailFluencyCheck
 
 	current := liquidOutput
@@ -462,7 +513,12 @@ End your response with a final line: VERDICT: READY FOR PRODUCTION or VERDICT: R
 %s
 </liquid_email>`, current)
 
-		result, err := client.Send(system, user)
+		result, err := client.Send(ctx, system, user)
+		if errors.Is(err, errAnswerCutOff) {
+			// An unfinished fluency pass is discarded like an invalid one.
+			rejected = true
+			continue
+		}
 		if err != nil {
 			return current, "", err
 		}

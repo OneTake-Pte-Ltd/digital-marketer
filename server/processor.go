@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -59,12 +62,22 @@ func (p *Plugin) loadAssets() (brandProfile, audienceSegment, avatar string, err
 	return
 }
 
+// processorTimeout bounds a whole run, so a stuck call cannot keep a run silent for hours.
+const processorTimeout = 45 * time.Minute
+
 // RunProcessor executes the full morning pipeline for the given date.
 // If date is empty, it uses yesterday's date in CET.
 func (p *Plugin) RunProcessor(date string) {
 	if date == "" {
 		date = yesterdayInCET()
 	}
+
+	// One run per date at a time; a second one would post a duplicate email.
+	if _, running := p.runningDates.LoadOrStore(date, struct{}{}); running {
+		p.postToChannel(fmt.Sprintf("⚠️ Neil is already processing %s. Use `/neil status %s` to follow it.", date, date))
+		return
+	}
+	defer p.runningDates.Delete(date)
 
 	p.API.LogInfo("Neil: starting morning processor", "date", date)
 
@@ -76,13 +89,26 @@ func (p *Plugin) RunProcessor(date string) {
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	if err := p.kvstore.StoreRunStatus(date, &status); err != nil {
-		p.API.LogError("Neil: failed to store run status", "error", err.Error())
-	}
+	progress := p.newRunProgress(date, &status)
+
+	// Without this, a panic would crash the plugin process and end the run without a word.
+	defer func() {
+		if r := recover(); r != nil {
+			p.API.LogError("Neil: processor crashed", "date", date, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			progress.finish("❌ crashed; see the message below")
+			p.handleProcessorError(date, &status, status.Step, fmt.Errorf("unexpected crash: %v", r))
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), processorTimeout)
+	defer cancel()
+
+	progress.step("Run started")
 
 	// Step 2.1: Load all posts for yesterday
 	ids, err := p.kvstore.GetIndex(date)
 	if err != nil {
+		progress.finish("❌ failed; see the message below")
 		p.handleProcessorError(date, &status, "load index", err)
 		return
 	}
@@ -108,6 +134,7 @@ func (p *Plugin) RunProcessor(date string) {
 	}
 
 	if len(mediaPosts) == 0 {
+		progress.finish("⚪ nothing to process")
 		msg := fmt.Sprintf("⚠️ No audio or video content found on the Telegram channel for %s. No email generated today.", date)
 		p.postToChannel(msg)
 		status.Status = "completed_no_content"
@@ -123,16 +150,29 @@ func (p *Plugin) RunProcessor(date string) {
 
 	var transcribed []transcribedPost
 	for _, post := range mediaPosts {
-		text, err := p.transcribeMediaPost(tgClient, bunnyClient, elevenClient, date, post, cfg.transcriptionLanguage())
+		if ctx.Err() != nil {
+			break
+		}
+		progress.step(fmt.Sprintf("Fetching and transcribing message %d (%s)", post.MessageID, post.MessageType))
+		text, err := p.transcribeMediaPost(ctx, tgClient, bunnyClient, elevenClient, date, post, cfg.transcriptionLanguage())
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			p.API.LogError("Neil: media post skipped", "message_id", post.MessageID, "error", err.Error())
 			p.postToChannel(fmt.Sprintf("⚠️ Message %d (%s) on %s was skipped: %s. Run `/neil run %s` to retry.", post.MessageID, post.MessageType, date, err.Error(), date))
 			continue
 		}
 		transcribed = append(transcribed, transcribedPost{Post: post, Transcription: text})
 	}
+	if ctx.Err() != nil {
+		p.stopRun(ctx, date, &status, progress, "transcription", ctx.Err())
+		return
+	}
+	progress.step(fmt.Sprintf("%d of %d audio or video posts transcribed", len(transcribed), len(mediaPosts)))
 
 	if len(transcribed) == 0 {
+		progress.finish("❌ failed; see the message below")
 		msg := fmt.Sprintf("⚠️ None of the %d audio or video posts for %s could be transcribed. No email generated today. Fix the errors above, then run `/neil run %s`.", len(mediaPosts), date, date)
 		p.postToChannel(msg)
 		status.Status = "failed_no_transcription"
@@ -155,23 +195,24 @@ func (p *Plugin) RunProcessor(date string) {
 	anthropicClient := newAnthropicClient(cfg.AnthropicAPIKey, cfg.anthropicModel())
 
 	pipelineInput := PipelineInput{
-		Context:         dayCtx,
-		BrandProfile:    brandProfile,
-		AudienceSegment: audienceSegment,
-		Avatar:          avatar,
+		Context:          dayCtx,
+		BrandProfile:     brandProfile,
+		AudienceSegment:  audienceSegment,
+		Avatar:           avatar,
 		OfferDescription: cfg.OfferDescription,
-		DefaultCTAURL:   cfg.DefaultCTAURL,
-		Model:           cfg.anthropicModel(),
-		APIKey:          cfg.AnthropicAPIKey,
+		DefaultCTAURL:    cfg.DefaultCTAURL,
+		Model:            cfg.anthropicModel(),
+		APIKey:           cfg.AnthropicAPIKey,
 	}
 
-	result, err := RunPipeline(anthropicClient, pipelineInput)
+	result, err := RunPipeline(ctx, anthropicClient, pipelineInput, progress.step)
 	if err != nil {
-		p.handleProcessorError(date, &status, "email pipeline", err)
+		p.stopRun(ctx, date, &status, progress, "email pipeline", err)
 		return
 	}
 
 	// Step 2.7: Post to Mattermost
+	progress.finish("✅ done; the email is posted below")
 	p.postEmailResult(date, result)
 
 	status.Status = "completed"
@@ -180,6 +221,23 @@ func (p *Plugin) RunProcessor(date string) {
 	_ = p.kvstore.StoreRunStatus(date, &status)
 
 	p.API.LogInfo("Neil: morning processor completed", "date", date)
+}
+
+// stopRun reports an error that ends the run, naming the time limit when that is what stopped it.
+func (p *Plugin) stopRun(ctx context.Context, date string, status *RunStatus, progress *runProgress, step string, err error) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		progress.finish("❌ failed; see the message below")
+		p.handleProcessorError(date, status, step, err)
+		return
+	}
+	minutes := int(processorTimeout.Minutes())
+	p.API.LogError("Neil: run timed out", "date", date, "step", status.Step)
+	progress.finish(fmt.Sprintf("⏱ stopped after %d minutes; see the message below", minutes))
+	p.postToChannel(fmt.Sprintf("⚠️ Neil stopped the run for %s after %d minutes, during \"%s\". Run `/neil run %s` to retry; finished transcriptions are reused.", date, minutes, status.Step, date))
+	status.Status = "failed_timeout"
+	status.Error = fmt.Sprintf("time limit of %d minutes reached during %q", minutes, status.Step)
+	status.UpdatedAt = time.Now()
+	_ = p.kvstore.StoreRunStatus(date, status)
 }
 
 // isAudioVideo reports whether a post type carries speech that can be transcribed.
@@ -196,7 +254,7 @@ type transcribedPost struct {
 // transcribeMediaPost makes sure the post's media is on the CDN and transcribed, and
 // returns the transcription. Work already stored in the media record (from an earlier
 // run of the same date) is reused, so a replay only redoes the steps that failed.
-func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, el *elevenLabsClient, date string, post TelegramPost, languageCode string) (string, error) {
+func (p *Plugin) transcribeMediaPost(ctx context.Context, tg *telegramClient, bunny *bunnyCDNClient, el *elevenLabsClient, date string, post TelegramPost, languageCode string) (string, error) {
 	var record MediaRecord
 	if err := p.kvstore.GetMedia(post.MessageID, &record); err != nil {
 		p.API.LogWarn("Neil: failed to read media record, starting fresh", "message_id", post.MessageID, "error", err.Error())
@@ -208,7 +266,7 @@ func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, 
 	}
 
 	if record.BunnyCDNURL == "" {
-		cdnURL, err := p.uploadMedia(tg, bunny, date, post)
+		cdnURL, err := p.uploadMedia(ctx, tg, bunny, date, post)
 		if err != nil {
 			return "", fmt.Errorf("media upload failed: %w", err)
 		}
@@ -218,7 +276,7 @@ func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, 
 		}
 	}
 
-	text, err := el.Transcribe(record.BunnyCDNURL, languageCode)
+	text, err := el.Transcribe(ctx, record.BunnyCDNURL, languageCode)
 	if err != nil {
 		return "", fmt.Errorf("transcription failed: %w", err)
 	}
@@ -235,15 +293,15 @@ func (p *Plugin) transcribeMediaPost(tg *telegramClient, bunny *bunnyCDNClient, 
 
 // uploadMedia resolves the post's Telegram download URL and has the Bunny Edge Script
 // fetch it directly into BunnyCDN storage.
-func (p *Plugin) uploadMedia(tg *telegramClient, bunny *bunnyCDNClient, date string, post TelegramPost) (string, error) {
-	fileURL, err := tg.GetFileURL(post.FileID)
+func (p *Plugin) uploadMedia(ctx context.Context, tg *telegramClient, bunny *bunnyCDNClient, date string, post TelegramPost) (string, error) {
+	fileURL, err := tg.GetFileURL(ctx, post.FileID)
 	if err != nil {
 		return "", fmt.Errorf("getFileURL: %w", err)
 	}
 
 	filename := fmt.Sprintf("%d%s", post.MessageID, extensionForFile(fileURL, post.MessageType))
 
-	cdnURL, err := bunny.FetchFile(date, filename, fileURL)
+	cdnURL, err := bunny.FetchFile(ctx, date, filename, fileURL)
 	if err != nil {
 		return "", fmt.Errorf("upload: %w", err)
 	}

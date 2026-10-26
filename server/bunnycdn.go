@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,7 +43,7 @@ func (e *bunnyUploadError) Error() string { return e.msg }
 // the public CDN URL. The file goes straight from Telegram to Bunny without passing through
 // Mattermost. Files are stored under /neil/{date}/{filename}. Transient failures are retried
 // with backoff.
-func (b *bunnyCDNClient) FetchFile(date, filename, sourceURL string) (string, error) {
+func (b *bunnyCDNClient) FetchFile(ctx context.Context, date, filename, sourceURL string) (string, error) {
 	fetchURL := fmt.Sprintf("%s/fetch/neil/%s/%s", b.edgeScriptURL, date, filename)
 	payload, err := json.Marshal(map[string]string{"source_url": sourceURL})
 	if err != nil {
@@ -52,7 +53,7 @@ func (b *bunnyCDNClient) FetchFile(date, filename, sourceURL string) (string, er
 	delay := b.retryDelay
 	var lastErr *bunnyUploadError
 	for attempt := 1; attempt <= bunnyUploadAttempts; attempt++ {
-		cdnURL, err := b.fetchOnce(fetchURL, payload)
+		cdnURL, err := b.fetchOnce(ctx, fetchURL, payload)
 		if err == nil {
 			return cdnURL, nil
 		}
@@ -60,7 +61,9 @@ func (b *bunnyCDNClient) FetchFile(date, filename, sourceURL string) (string, er
 		if !err.retryable || attempt == bunnyUploadAttempts {
 			break
 		}
-		time.Sleep(delay)
+		if sleepContext(ctx, delay) != nil {
+			break
+		}
 		delay *= 2
 	}
 	if lastErr.retryable {
@@ -69,8 +72,8 @@ func (b *bunnyCDNClient) FetchFile(date, filename, sourceURL string) (string, er
 	return "", lastErr
 }
 
-func (b *bunnyCDNClient) fetchOnce(fetchURL string, payload []byte) (string, *bunnyUploadError) {
-	req, err := http.NewRequest(http.MethodPost, fetchURL, bytes.NewReader(payload))
+func (b *bunnyCDNClient) fetchOnce(ctx context.Context, fetchURL string, payload []byte) (string, *bunnyUploadError) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", &bunnyUploadError{msg: fmt.Sprintf("build fetch request: %s", err)}
 	}

@@ -31,14 +31,12 @@ func (m *mockRunner) RunProcessor(date string) {
 	m.date = date
 }
 
+func (m *mockRunner) RunStatusReport(date string) string {
+	return "status for " + date
+}
+
 func registerCommandMock(e *env) {
-	e.api.On("RegisterCommand", &model.Command{
-		Trigger:          neilCommandTrigger,
-		AutoComplete:     true,
-		AutoCompleteDesc: "Trigger the daily email processor",
-		AutoCompleteHint: "[run] [YYYY-MM-DD]",
-		AutocompleteData: model.NewAutocompleteData(neilCommandTrigger, "[run] [YYYY-MM-DD]", "Run the morning processor for a given date"),
-	}).Return(nil)
+	e.api.On("RegisterCommand", commandDefinition()).Return(nil)
 }
 
 func TestNeilRunCommand(t *testing.T) {
@@ -51,7 +49,7 @@ func TestNeilRunCommand(t *testing.T) {
 	response, err := cmdHandler.Handle(&model.CommandArgs{Command: "/neil run"})
 	assert.Nil(t, err)
 	assert.Equal(t, model.CommandResponseTypeEphemeral, response.ResponseType)
-	assert.Contains(t, response.Text, "processor")
+	assert.Contains(t, response.Text, "yesterday")
 }
 
 func TestNeilRunCommandWithDate(t *testing.T) {
@@ -76,4 +74,30 @@ func TestNeilUsageHint(t *testing.T) {
 	response, err := cmdHandler.Handle(&model.CommandArgs{Command: "/neil"})
 	assert.Nil(t, err)
 	assert.Contains(t, response.Text, "Usage")
+}
+
+func TestNeilRunCommandRejectsBadDate(t *testing.T) {
+	e := setupTest()
+	runner := &mockRunner{}
+	registerCommandMock(e)
+
+	cmdHandler := NewCommandHandler(e.client, runner)
+
+	response, err := cmdHandler.Handle(&model.CommandArgs{Command: "/neil run 2026-10-1"})
+	assert.Nil(t, err)
+	assert.Contains(t, response.Text, "not a date")
+	assert.False(t, runner.called, "a mistyped date must not run yesterday instead")
+}
+
+func TestNeilStatusCommand(t *testing.T) {
+	e := setupTest()
+	runner := &mockRunner{}
+	registerCommandMock(e)
+
+	cmdHandler := NewCommandHandler(e.client, runner)
+
+	response, err := cmdHandler.Handle(&model.CommandArgs{Command: "/neil status 2026-10-21"})
+	assert.Nil(t, err)
+	assert.Equal(t, "status for 2026-10-21", response.Text)
+	assert.False(t, runner.called)
 }
