@@ -170,51 +170,61 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// pipelineReporter is told when each step starts and is shown each step's output.
+type pipelineReporter interface {
+	step(name string)
+	result(slug, title, text string, liquid bool)
+}
+
 // RunPipeline executes all six email pipeline steps and returns the final Liquid output.
-// progress is called as each step starts.
-func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInput, progress func(step string)) (*PipelineResult, error) {
+func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInput, report pipelineReporter) (*PipelineResult, error) {
 	var warnings []string
 
 	// Step A: Define the CTA
-	progress("Step A: choosing the call to action")
+	report.step("Step A: choosing the call to action")
 	ctaBrief, err := stepA(ctx, client, input)
 	if err != nil {
 		return nil, fmt.Errorf("step A (CTA): %w", err)
 	}
+	report.result("step-a-cta-brief", "Step A: call to action brief", ctaBrief, false)
 
 	// Step B: Write the storyselling email
-	progress("Step B: writing the email")
+	report.step("Step B: writing the email")
 	emailDraft, err := stepB(ctx, client, input, ctaBrief)
 	if err != nil {
 		return nil, fmt.Errorf("step B (write email): %w", err)
 	}
+	report.result("step-b-draft", "Step B: first draft", emailDraft, false)
 
 	// Step C: Review the draft (up to 3 iterations)
-	progress("Step C: reviewing the draft")
+	report.step("Step C: reviewing the draft")
 	reviewedDraft, reviewWarning, err := stepC(ctx, client, input, emailDraft)
 	if err != nil {
 		return nil, fmt.Errorf("step C (review): %w", err)
 	}
+	report.result("step-c-reviewed", "Step C: reviewed draft", reviewedDraft, false)
 	if reviewWarning != "" {
 		warnings = append(warnings, reviewWarning)
 	}
 
 	// Step D: Humanize the copy
-	progress("Step D: humanizing the copy")
+	report.step("Step D: humanizing the copy")
 	humanizedDraft, err := stepD(ctx, client, input, reviewedDraft)
 	if err != nil {
 		return nil, fmt.Errorf("step D (humanize): %w", err)
 	}
+	report.result("step-d-humanized", "Step D: humanized draft", humanizedDraft, false)
 
 	// Step E: Produce Liquid output
-	progress("Step E: translating into 6 languages (Liquid)")
+	report.step("Step E: translating into 6 languages (Liquid)")
 	liquidOutput, err := stepE(ctx, client, input, humanizedDraft, ctaBrief)
 	if err != nil {
 		return nil, fmt.Errorf("step E (liquid): %w", err)
 	}
+	report.result("step-e-liquid", "Step E: six-language Liquid, before the fluency check", liquidOutput, true)
 
 	// Step F: Fluency check (up to 2 iterations)
-	progress("Step F: checking translation fluency")
+	report.step("Step F: checking translation fluency")
 	finalLiquid, fluencyWarning, err := stepF(ctx, client, liquidOutput)
 	if err != nil {
 		return nil, fmt.Errorf("step F (fluency): %w", err)

@@ -18,7 +18,9 @@ There is no external database. All state lives in the Mattermost plugin KV store
 server/
   main.go                   Entry point. Imports _ "time/tzdata" for embedded CET timezone data.
   plugin.go                 Plugin struct, OnActivate, OnDeactivate, ExecuteCommand,
-                            MessageHasBeenPosted, ServeHTTP, postToChannel, registerWebhook.
+                            MessageHasBeenPosted, ServeHTTP, postToChannel, registerWebhook,
+                            createPost (thread replies, attachments), postText (attaches text
+                            over maxPostRunes = 16383, Mattermost's message limit).
   api.go                    HTTP router. /telegram/webhook (no auth), /api/v1/* (auth-protected).
   configuration.go          Plugin settings struct, getConfiguration/setConfiguration,
                             OnConfigurationChange (re-registers Telegram webhook on save).
@@ -29,7 +31,8 @@ server/
                             Each run has a 45-minute context (processorTimeout), recovers
                             from panics, and holds its date in Plugin.runningDates.
   progress.go               runProgress: one Mattermost post per run, edited at each step;
-                            mirrors the step into RunStatus.Step. RunStatusReport and
+                            mirrors the step into RunStatus.Step. result() replies in that
+                            post's thread with each transcription and the output of steps A-E. RunStatusReport and
                             formatRunStatus back /neil status.
   types.go                  All shared structs: TelegramPost, MediaRecord, RunStatus, DayContext,
                             PipelineInput, PipelineResult, raw Telegram API types.
@@ -111,7 +114,7 @@ All fields map 1:1 to `plugin.json` settings. Access via `p.getConfiguration()` 
 
 ## Email Pipeline (Steps A–F)
 
-All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. `RunPipeline` calls its `progress` callback as each step starts.
+All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. `RunPipeline` reports to a `pipelineReporter`: `step` as each step starts, `result` with the output of steps A to E.
 
 | Step | Function | Input | Output | Retries |
 |---|---|---|---|---|
@@ -125,6 +128,8 @@ All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClien
 Every step's input is wrapped in XML-style tags and every output is read back from tags with `extractTagged`. Only the extracted content moves to the next step or loop iteration; review notes and verdicts never do. `finalVerdict` reads the text after the last `VERDICT:`.
 
 `validateLiquid` requires a `{%case user.language%}` switch, an `endcase`, and parseable Title and Message body blocks. Step F keeps the last valid version: a fluency pass whose output fails validation is discarded and a warning is posted.
+
+`postEmailResult` posts the final email; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
 
 `parseLiquidBlocks` extracts the three `### Title`, `### Pre-header`, `### Message body` sections. Headings inside a code fence are treated as email content, so the body can use `##` subheadings. If parsing fails, the entire output is placed in the body.
 

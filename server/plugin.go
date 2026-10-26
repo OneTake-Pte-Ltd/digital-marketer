@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -125,22 +126,65 @@ func (p *Plugin) postToChannel(msg string) {
 
 // createChannelPost posts msg to the configured channel and returns the post, or nil on failure.
 func (p *Plugin) createChannelPost(msg string) *model.Post {
+	post, err := p.createPost("", msg, nil)
+	if err != nil {
+		p.API.LogError("Neil: failed to post to channel", "error", err.Error())
+		return nil
+	}
+	return post
+}
+
+// maxPostRunes is the longest message Mattermost accepts in one post.
+const maxPostRunes = model.PostMessageMaxRunesV2
+
+// createPost posts msg to the configured channel, as a reply in rootID's thread when rootID
+// is set, with the given files attached.
+func (p *Plugin) createPost(rootID, msg string, fileIDs []string) (*model.Post, error) {
 	cfg := p.getConfiguration()
 	if cfg.ChannelID == "" {
-		p.API.LogWarn("Neil: no channel configured, dropping message")
-		return nil
+		return nil, errors.New("no channel configured")
 	}
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: cfg.ChannelID,
+		RootId:    rootID,
 		Message:   msg,
+		FileIds:   fileIDs,
 	}
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
-		p.API.LogError("Neil: failed to post to channel", "error", appErr.Error())
-		return nil
+		return nil, appErr
 	}
-	return created
+	return created, nil
+}
+
+// attachText uploads text as a file to the configured channel and returns its ID.
+func (p *Plugin) attachText(filename, text string) (string, error) {
+	info, appErr := p.API.UploadFile([]byte(text), p.getConfiguration().ChannelID, filename)
+	if appErr != nil {
+		return "", appErr
+	}
+	return info.Id, nil
+}
+
+// postText posts heading followed by text, in a code block when code is true. Text too
+// long for one post is attached as filename instead.
+func (p *Plugin) postText(rootID, heading, text string, code bool, filename string) error {
+	body := text
+	if code {
+		body = "```liquid\n" + text + "\n```"
+	}
+	msg := heading + "\n" + body
+	if utf8.RuneCountInString(msg) <= maxPostRunes {
+		_, err := p.createPost(rootID, msg, nil)
+		return err
+	}
+	fileID, err := p.attachText(filename, text)
+	if err != nil {
+		return fmt.Errorf("attach %s: %w", filename, err)
+	}
+	_, err = p.createPost(rootID, heading+"\n_Too long for one message; the full text is attached._", []string{fileID})
+	return err
 }
 
 func (p *Plugin) registerWebhook() error {

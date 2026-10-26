@@ -120,9 +120,13 @@ Users listed in **Users to Tag** and Mattermost system admins can run these comm
 
 As soon as a run starts, Neil posts a progress message and keeps editing it: one line per step, with the time it started (CET). When the run ends, the first line shows the outcome. If a run goes quiet, this message shows where it stopped.
 
+While the run goes on, Neil replies in that message's thread with each intermediate result, so you can check it is heading in the right direction: each transcription (marked when it was reused from an earlier run), the call to action brief (step A), the first draft (B), the reviewed draft (C), the humanized draft (D) and the six-language Liquid before the fluency check (E). A result too long for one Mattermost message is attached as a `.txt` file.
+
+Replaying a date doesn't fetch or transcribe the same audio again: the Bunny URL and transcription of each message are stored and reused. Only the email steps (A to F) run again.
+
 A run is stopped after 45 minutes. Neil then posts which step it was on; replaying the date reuses the transcriptions already done.
 
-When the pipeline completes, Neil posts three Liquid code blocks to the configured channel:
+When the pipeline completes, Neil posts three Liquid code blocks to the configured channel. Mattermost limits a message to 16,383 characters, so when the six-language email is longer, the message body is attached as `neil-YYYY-MM-DD-message-body.txt` and the title and pre-header stay in the message:
 
 - **Title** — the email subject line in six languages
 - **Pre-header** — the inbox preview text in six languages
