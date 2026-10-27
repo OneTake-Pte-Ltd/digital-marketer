@@ -37,6 +37,19 @@ func (r *runProgress) step(name string) {
 	r.render()
 }
 
+// result posts a step's output as a reply in the run's thread, so its direction can be
+// checked while the run goes on. Output too long for one message is attached as a file.
+func (r *runProgress) result(slug, title, text string, liquid bool) {
+	rootID := ""
+	if r.post != nil {
+		rootID = r.post.Id
+	}
+	filename := fmt.Sprintf("neil-%s-%s.txt", r.date, slug)
+	if err := r.p.postText(rootID, "**"+title+"**", text, liquid, filename); err != nil {
+		r.p.API.LogWarn("Neil: failed to post a step result", "step", title, "error", err.Error())
+	}
+}
+
 // finish marks the run as over. The outcome itself is posted as a separate message.
 func (r *runProgress) finish(state string) {
 	r.state = state

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
@@ -16,6 +19,7 @@ import (
 type fakeKV struct {
 	mu       sync.Mutex
 	statuses map[string][]byte
+	media    map[int64]MediaRecord
 	getIndex func(date string) ([]int64, error)
 }
 
@@ -23,9 +27,14 @@ func (f *fakeKV) StorePost(string, int64, interface{}) error { return nil }
 func (f *fakeKV) GetPost(string, int64, interface{}) error   { return nil }
 func (f *fakeKV) AppendToIndex(string, int64) error          { return nil }
 func (f *fakeKV) StoreMedia(int64, interface{}) error        { return nil }
-func (f *fakeKV) GetMedia(int64, interface{}) error          { return nil }
-func (f *fakeKV) StoreWebhookSecret(string) error            { return nil }
-func (f *fakeKV) GetWebhookSecret() (string, error)          { return "", nil }
+func (f *fakeKV) GetMedia(id int64, dest interface{}) error {
+	if record, ok := f.media[id]; ok {
+		*dest.(*MediaRecord) = record
+	}
+	return nil
+}
+func (f *fakeKV) StoreWebhookSecret(string) error   { return nil }
+func (f *fakeKV) GetWebhookSecret() (string, error) { return "", nil }
 func (f *fakeKV) GetIndex(date string) ([]int64, error) {
 	if f.getIndex != nil {
 		return f.getIndex(date)
@@ -144,4 +153,82 @@ func TestRunProcessorRefusesSecondRunForSameDate(t *testing.T) {
 
 	close(release)
 	<-done
+}
+
+// postRecorder is a mock API that keeps every post Neil creates and every file it uploads.
+func postRecorder(t *testing.T) (*Plugin, *[]*model.Post, *[]string) {
+	t.Helper()
+	api := &plugintest.API{}
+	var posts []*model.Post
+	var uploads []string
+	api.On("CreatePost", mock.Anything).Return(func(post *model.Post) *model.Post {
+		created := post.Clone()
+		created.Id = model.NewId()
+		posts = append(posts, created)
+		return created
+	}, nil)
+	api.On("UpdatePost", mock.Anything).Return(func(post *model.Post) *model.Post { return post }, nil)
+	api.On("UploadFile", mock.Anything, "channel", mock.Anything).Return(func(_ []byte, _, name string) *model.FileInfo {
+		uploads = append(uploads, name)
+		return &model.FileInfo{Id: "file-" + name}
+	}, nil)
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe().Return()
+
+	p := &Plugin{kvstore: &fakeKV{statuses: map[string][]byte{}}, botUserID: "bot"}
+	p.SetAPI(api)
+	p.setConfiguration(&configuration{ChannelID: "channel"})
+	return p, &posts, &uploads
+}
+
+func TestPostEmailResultAttachesLongBody(t *testing.T) {
+	p, posts, uploads := postRecorder(t)
+	body := strings.Repeat("Une longue phrase en six langues. ", 1000)
+
+	require.NoError(t, p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", PreHeaderLiquid: "Aperçu", BodyLiquid: body}))
+
+	require.Len(t, *posts, 1)
+	post := (*posts)[0]
+	assert.LessOrEqual(t, utf8.RuneCountInString(post.Message), maxPostRunes)
+	assert.Contains(t, post.Message, "Titre")
+	assert.Contains(t, post.Message, "neil-2026-10-25-message-body.txt")
+	assert.Equal(t, []string{"neil-2026-10-25-message-body.txt"}, *uploads)
+	assert.Equal(t, model.StringArray{"file-neil-2026-10-25-message-body.txt"}, post.FileIds)
+}
+
+func TestPostEmailResultKeepsShortEmailInline(t *testing.T) {
+	p, posts, uploads := postRecorder(t)
+
+	require.NoError(t, p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", BodyLiquid: "Corps"}))
+
+	require.Len(t, *posts, 1)
+	assert.Contains(t, (*posts)[0].Message, "Corps")
+	assert.Empty(t, *uploads)
+}
+
+func TestStepResultsGoInTheRunThread(t *testing.T) {
+	p, posts, uploads := postRecorder(t)
+	status := RunStatus{}
+	progress := p.newRunProgress("2026-10-25", &status)
+
+	progress.step("Run started")
+	progress.result("step-b-draft", "Step B: first draft", "Objet : test", false)
+	progress.result("step-e-liquid", "Step E: Liquid", strings.Repeat("x", maxPostRunes), true)
+
+	require.Len(t, *posts, 3)
+	root := (*posts)[0].Id
+	assert.Equal(t, root, (*posts)[1].RootId)
+	assert.Contains(t, (*posts)[1].Message, "Objet : test")
+	assert.Equal(t, root, (*posts)[2].RootId)
+	assert.Equal(t, []string{"neil-2026-10-25-step-e-liquid.txt"}, *uploads)
+}
+
+func TestTranscribeMediaPostReusesStoredTranscription(t *testing.T) {
+	p, _, _ := postRecorder(t)
+	p.kvstore = &fakeKV{media: map[int64]MediaRecord{129: {BunnyCDNURL: "https://cdn.test/129.oga", Transcription: "Bonjour"}}}
+
+	// No clients: any upload or transcription call would panic.
+	text, reused, err := p.transcribeMediaPost(context.Background(), nil, nil, nil, "2026-10-25", TelegramPost{MessageID: 129}, "fr")
+	require.NoError(t, err)
+	assert.True(t, reused)
+	assert.Equal(t, "Bonjour", text)
 }

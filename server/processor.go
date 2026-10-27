@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var cetLocation *time.Location
@@ -154,7 +155,7 @@ func (p *Plugin) RunProcessor(date string) {
 			break
 		}
 		progress.step(fmt.Sprintf("Fetching and transcribing message %d (%s)", post.MessageID, post.MessageType))
-		text, err := p.transcribeMediaPost(ctx, tgClient, bunnyClient, elevenClient, date, post, cfg.transcriptionLanguage())
+		text, reused, err := p.transcribeMediaPost(ctx, tgClient, bunnyClient, elevenClient, date, post, cfg.transcriptionLanguage())
 		if err != nil {
 			if ctx.Err() != nil {
 				break
@@ -163,6 +164,11 @@ func (p *Plugin) RunProcessor(date string) {
 			p.postToChannel(fmt.Sprintf("⚠️ Message %d (%s) on %s was skipped: %s. Run `/neil run %s` to retry.", post.MessageID, post.MessageType, date, err.Error(), date))
 			continue
 		}
+		title := fmt.Sprintf("Transcription of message %d (%s)", post.MessageID, post.MessageType)
+		if reused {
+			title += ", reused from an earlier run"
+		}
+		progress.result(fmt.Sprintf("transcription-%d", post.MessageID), title, text, false)
 		transcribed = append(transcribed, transcribedPost{Post: post, Transcription: text})
 	}
 	if ctx.Err() != nil {
@@ -205,15 +211,19 @@ func (p *Plugin) RunProcessor(date string) {
 		APIKey:           cfg.AnthropicAPIKey,
 	}
 
-	result, err := RunPipeline(ctx, anthropicClient, pipelineInput, progress.step)
+	result, err := RunPipeline(ctx, anthropicClient, pipelineInput, progress)
 	if err != nil {
 		p.stopRun(ctx, date, &status, progress, "email pipeline", err)
 		return
 	}
 
 	// Step 2.7: Post to Mattermost
+	if err := p.postEmailResult(date, result); err != nil {
+		progress.finish("❌ the email was written but could not be posted; see the message below")
+		p.handleProcessorError(date, &status, "post email", err)
+		return
+	}
 	progress.finish("✅ done; the email is posted below")
-	p.postEmailResult(date, result)
 
 	status.Status = "completed"
 	status.UpdatedAt = time.Now()
@@ -253,8 +263,9 @@ type transcribedPost struct {
 
 // transcribeMediaPost makes sure the post's media is on the CDN and transcribed, and
 // returns the transcription. Work already stored in the media record (from an earlier
-// run of the same date) is reused, so a replay only redoes the steps that failed.
-func (p *Plugin) transcribeMediaPost(ctx context.Context, tg *telegramClient, bunny *bunnyCDNClient, el *elevenLabsClient, date string, post TelegramPost, languageCode string) (string, error) {
+// run of the same date) is reused, so a replay only redoes the steps that failed; reused
+// reports that the transcription itself came from the record.
+func (p *Plugin) transcribeMediaPost(ctx context.Context, tg *telegramClient, bunny *bunnyCDNClient, el *elevenLabsClient, date string, post TelegramPost, languageCode string) (text string, reused bool, err error) {
 	var record MediaRecord
 	if err := p.kvstore.GetMedia(post.MessageID, &record); err != nil {
 		p.API.LogWarn("Neil: failed to read media record, starting fresh", "message_id", post.MessageID, "error", err.Error())
@@ -262,13 +273,13 @@ func (p *Plugin) transcribeMediaPost(ctx context.Context, tg *telegramClient, bu
 	}
 
 	if strings.TrimSpace(record.Transcription) != "" {
-		return record.Transcription, nil
+		return record.Transcription, true, nil
 	}
 
 	if record.BunnyCDNURL == "" {
 		cdnURL, err := p.uploadMedia(ctx, tg, bunny, date, post)
 		if err != nil {
-			return "", fmt.Errorf("media upload failed: %w", err)
+			return "", false, fmt.Errorf("media upload failed: %w", err)
 		}
 		record.BunnyCDNURL = cdnURL
 		if err := p.kvstore.StoreMedia(post.MessageID, &record); err != nil {
@@ -276,19 +287,19 @@ func (p *Plugin) transcribeMediaPost(ctx context.Context, tg *telegramClient, bu
 		}
 	}
 
-	text, err := el.Transcribe(ctx, record.BunnyCDNURL, languageCode)
+	text, err = el.Transcribe(ctx, record.BunnyCDNURL, languageCode)
 	if err != nil {
-		return "", fmt.Errorf("transcription failed: %w", err)
+		return "", false, fmt.Errorf("transcription failed: %w", err)
 	}
 	if strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("transcription returned no text")
+		return "", false, fmt.Errorf("transcription returned no text")
 	}
 
 	record.Transcription = text
 	if err := p.kvstore.StoreMedia(post.MessageID, &record); err != nil {
 		p.API.LogWarn("Neil: failed to store transcription", "message_id", post.MessageID, "error", err.Error())
 	}
-	return text, nil
+	return text, false, nil
 }
 
 // uploadMedia resolves the post's Telegram download URL and has the Bunny Edge Script
@@ -332,7 +343,7 @@ func buildDayContext(date string, transcribed []transcribedPost) DayContext {
 	return ctx
 }
 
-func (p *Plugin) postEmailResult(date string, result *PipelineResult) {
+func (p *Plugin) postEmailResult(date string, result *PipelineResult) error {
 	cfg := p.getConfiguration()
 
 	// Build mention string
@@ -345,35 +356,34 @@ func (p *Plugin) postEmailResult(date string, result *PipelineResult) {
 		mentions = " " + strings.Join(parts, " ")
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**Daily Email; %s**%s\n\n", date, mentions))
-
-	if result.TitleLiquid != "" {
-		sb.WriteString("### Title\n")
-		sb.WriteString("```liquid\n")
-		sb.WriteString(result.TitleLiquid + "\n")
-		sb.WriteString("```\n\n")
+	block := func(heading, liquid string) string {
+		if liquid == "" {
+			return ""
+		}
+		return "### " + heading + "\n```liquid\n" + liquid + "\n```\n\n"
 	}
-
-	if result.PreHeaderLiquid != "" {
-		sb.WriteString("### Pre-header\n")
-		sb.WriteString("```liquid\n")
-		sb.WriteString(result.PreHeaderLiquid + "\n")
-		sb.WriteString("```\n\n")
-	}
-
-	if result.BodyLiquid != "" {
-		sb.WriteString("### Message body\n")
-		sb.WriteString("```liquid\n")
-		sb.WriteString(result.BodyLiquid + "\n")
-		sb.WriteString("```\n\n")
-	}
-
+	header := fmt.Sprintf("**Daily Email; %s**%s\n\n", date, mentions)
+	head := block("Title", result.TitleLiquid) + block("Pre-header", result.PreHeaderLiquid)
+	var footer strings.Builder
 	for _, w := range result.Warnings {
-		sb.WriteString(w + "\n")
+		footer.WriteString(w + "\n")
 	}
 
-	p.postToChannel(sb.String())
+	msg := header + head + block("Message body", result.BodyLiquid) + footer.String()
+	if utf8.RuneCountInString(msg) <= maxPostRunes {
+		_, err := p.createPost("", msg, nil)
+		return err
+	}
+
+	// The six-language body often exceeds Mattermost's message limit: attach it instead.
+	filename := fmt.Sprintf("neil-%s-message-body.txt", date)
+	fileID, err := p.attachText(filename, result.BodyLiquid)
+	if err != nil {
+		return fmt.Errorf("attach the message body: %w", err)
+	}
+	msg = header + head + "### Message body\n_Too long for one message; it is attached as `" + filename + "`._\n\n" + footer.String()
+	_, err = p.createPost("", msg, []string{fileID})
+	return err
 }
 
 func (p *Plugin) handleProcessorError(date string, status *RunStatus, step string, err error) {

@@ -174,13 +174,25 @@ func TestRunPipelineReportsEachStep(t *testing.T) {
 		"<liquid_email>"+validLiquid+"</liquid_email>",
 		"<final_liquid>"+validLiquid+"</final_liquid>\nVERDICT: READY FOR PRODUCTION",
 	)
-	var steps []string
-	result, err := RunPipeline(context.Background(), client, PipelineInput{}, func(step string) { steps = append(steps, step) })
+	rec := &reportRecorder{}
+	result, err := RunPipeline(context.Background(), client, PipelineInput{}, rec)
 	require.NoError(t, err)
 	assert.Contains(t, result.TitleLiquid, "Bonjour")
-	require.Len(t, steps, 6)
-	assert.True(t, strings.HasPrefix(steps[0], "Step A"))
-	assert.True(t, strings.HasPrefix(steps[5], "Step F"))
+	require.Len(t, rec.steps, 6)
+	assert.True(t, strings.HasPrefix(rec.steps[0], "Step A"))
+	assert.True(t, strings.HasPrefix(rec.steps[5], "Step F"))
+	assert.Equal(t, []string{"CTA brief", "Objet : brouillon", "Objet : revu", "Objet : humain", validLiquid}, rec.results)
+}
+
+// reportRecorder collects what RunPipeline reports.
+type reportRecorder struct {
+	steps   []string
+	results []string
+}
+
+func (r *reportRecorder) step(name string) { r.steps = append(r.steps, name) }
+func (r *reportRecorder) result(_, _, text string, _ bool) {
+	r.results = append(r.results, text)
 }
 
 func TestStepFKeepsValidLiquidWhenAnswerIsCutOff(t *testing.T) {
