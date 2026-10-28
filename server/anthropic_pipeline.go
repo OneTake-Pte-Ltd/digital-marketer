@@ -244,8 +244,17 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 		warnings = append(warnings, fluencyWarning)
 	}
 
-	// Parse the three blocks from the final output
+	// Parse the three blocks from the final output. UserList's title and pre-header are
+	// one-line fields, whatever line breaks the model put in.
 	title, preHeader, body := parseLiquidBlocks(finalLiquid)
+	title, preHeader = singleLine(title), singleLine(preHeader)
+
+	if n := frenchBodyWords(humanizedDraft); n > maxBodyWords {
+		warnings = append(warnings, fmt.Sprintf("⚠️ The French body has about %d words; the target is %d to %d.", n, minBodyWords, maxBodyWords))
+	}
+	if found := findPlaceholders(title + "\n" + preHeader + "\n" + body); len(found) > 0 {
+		warnings = append(warnings, "⚠️ Placeholders left in the email, to fix before sending: "+strings.Join(found, ", "))
+	}
 
 	return &PipelineResult{
 		TitleLiquid:     title,
@@ -253,6 +262,67 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 		BodyLiquid:      body,
 		Warnings:        warnings,
 	}, nil
+}
+
+// Target length of the French body, from the hook to the signature, without the P.S.
+const (
+	minBodyWords = 250
+	maxBodyWords = 350
+)
+
+// singleLine joins a Liquid block's lines into one line. A line break next to a Liquid
+// tag carries no content and is dropped; one between two lines of text becomes a space.
+func singleLine(liquid string) string {
+	var sb strings.Builder
+	prev := ""
+	for _, line := range strings.Split(liquid, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if prev != "" && !strings.HasSuffix(prev, "%}") && !strings.HasPrefix(line, "{%") {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(line)
+		prev = line
+	}
+	return sb.String()
+}
+
+// frenchBodyWords counts the words of a draft's body: the subject line and the P.S. are
+// left out.
+func frenchBodyWords(draft string) int {
+	words := 0
+	for i, line := range strings.Split(strings.TrimSpace(draft), "\n") {
+		trimmed := strings.TrimSpace(strings.Trim(line, "*#_ "))
+		lower := strings.ToLower(trimmed)
+		if i == 0 && (strings.HasPrefix(lower, "objet") || strings.HasPrefix(lower, "subject")) {
+			continue
+		}
+		if strings.HasPrefix(lower, "p.s") || strings.HasPrefix(lower, "ps :") || strings.HasPrefix(lower, "ps:") {
+			break
+		}
+		words += len(strings.Fields(trimmed))
+	}
+	return words
+}
+
+// bracketRe matches text in square brackets; a following "(" marks a Markdown link.
+var bracketRe = regexp.MustCompile(`\[([^\[\]\n]+)\](\(?)`)
+
+// findPlaceholders returns the bracketed texts in s that are not Markdown links, such as
+// "[Trait physique à confirmer]", once each.
+func findPlaceholders(s string) []string {
+	var found []string
+	seen := map[string]bool{}
+	for _, m := range bracketRe.FindAllStringSubmatch(s, -1) {
+		if m[2] == "(" || seen[m[0]] {
+			continue
+		}
+		seen[m[0]] = true
+		found = append(found, m[0])
+	}
+	return found
 }
 
 func buildContextSummary(input PipelineInput) string {
@@ -376,6 +446,9 @@ Instructions:
 - Write the subject line using the benefit + curiosity formula
 - Include a P.S. if it strengthens the email
 - Write in French (the target language for the daily email)
+- Length: the body (hook to signature, without the P.S.) is 250 to 350 words. Tell one story, with one turning point
+- Use only facts from the transcription. Never write a placeholder, a bracketed note or an instruction to Sébastien (no "[à confirmer]"); if a detail is missing, write the sentence without it
+- Use the active voice and name who acts ("OneTake enlève les silences", not "silences enlevés"). Write full sentences with a verb, not nominal phrases ("Tu as une vidéo à tourner et seulement cinq minutes pour le faire", not "Une vidéo à tourner. Cinq minutes.")
 - Output: subject line, email body, and P.S. if applicable`,
 		input.Context.Date,
 		ctaBrief,
@@ -402,7 +475,10 @@ func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, dr
 
 	current := draft
 	for range stepCMaxIterations {
-		user := fmt.Sprintf(`Review the email draft below against all 14 checks.
+		user := fmt.Sprintf(`Review the email draft below against all 14 checks, plus these three:
+- Length: the body (hook to signature, without the P.S.) is 250 to 350 words. If it is longer, cut it.
+- Placeholders: no bracketed note, placeholder or instruction to the sender may remain. Rewrite the sentence without the missing detail; never invent one.
+- Active voice and full sentences: no passive constructions or participle lists ("silences enlevés"), no nominal phrases without a verb.
 For every issue found, provide a specific rewrite.
 
 Then output the complete corrected email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags. Put only the email inside the tags, with no review notes.
@@ -442,6 +518,7 @@ func stepD(ctx context.Context, client *anthropicClient, input PipelineInput, dr
 
 	user := fmt.Sprintf(`Review the email below for AI writing artefacts and humanize it.
 Remove patterns that mark it as machine-generated. Preserve meaning, structure, and brand voice.
+Apply every category, including active voice and full sentences (7), length (8: 250 to 350 words for the body, never longer than the input) and placeholders (9: none may remain).
 Output the full revised copy between <humanized_email> and </humanized_email> tags, with no annotations or commentary inside the tags.
 
 <email>
@@ -472,6 +549,8 @@ Produce three blocks:
 3. Message body
 
 Each block must contain all six languages (French, Spanish, Brazilian Portuguese, Italian, Japanese, English) using a case switch on user.language. The else branch is English.
+The Title and Pre-header blocks are each one single line: the whole case switch, from {%%case user.language%%} to {%% endcase %%}, with no line break.
+Keep the active voice and full sentences of the source in every language.
 
 CTA Brief (for URL and anchor text):
 %s

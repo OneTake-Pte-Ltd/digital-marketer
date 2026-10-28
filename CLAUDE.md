@@ -132,6 +132,10 @@ Every step's input is wrapped in XML-style tags and every output is read back fr
 
 `postEmailResult` posts the final email; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
 
+After step F, `RunPipeline` passes the Title and Pre-header through `singleLine` (UserList's fields are one line; line breaks next to Liquid tags are dropped, others become spaces). It adds a warning when the step D draft's French body (`frenchBodyWords`: no subject line, no P.S.) exceeds `maxBodyWords` (target 250 to 350), and when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email.
+
+The writing rules live in the prompts: length, no placeholders, active voice and full sentences are in step B's instructions, step C's extra checks and the humanize skill (categories 7 to 9); step E keeps the title and pre-header on one line.
+
 `parseLiquidBlocks` extracts the three `### Title`, `### Pre-header`, `### Message body` sections. Headings inside a code fence are treated as email content, so the body can use `##` subheadings. If parsing fails, the entire output is placed in the body.
 
 ## Telegram Webhook Flow

@@ -227,3 +227,40 @@ func TestSendDoesNotRetryRefusal(t *testing.T) {
 	assert.Contains(t, err.Error(), "declined")
 	assert.Equal(t, 1, *calls)
 }
+
+func TestSingleLine(t *testing.T) {
+	in := "{%case user.language%}\n{% when 'fr' %}\n100 % de bénéfice :\nla ceinture blanche\n{% else %}\n100% profit\n{% endcase %}"
+	assert.Equal(t, "{%case user.language%}{% when 'fr' %}100 % de bénéfice : la ceinture blanche{% else %}100% profit{% endcase %}", singleLine(in))
+}
+
+func TestFrenchBodyWords(t *testing.T) {
+	draft := "**Objet : un titre de cinq mots**\n\nUn deux trois.\nQuatre cinq.\n\nP.S. six sept huit"
+	assert.Equal(t, 5, frenchBodyWords(draft))
+}
+
+func TestFindPlaceholders(t *testing.T) {
+	text := "Suzanne Garrett. [Trait physique à confirmer par Sébastien avant l'envoi.] " +
+		"[Clique ici pour voir la vidéo](https://onetake.ai/?utm_source={{user.utm_source}}) " +
+		"{%case user.language%} [Trait physique à confirmer par Sébastien avant l'envoi.] [TODO]"
+	assert.Equal(t, []string{"[Trait physique à confirmer par Sébastien avant l'envoi.]", "[TODO]"}, findPlaceholders(text))
+}
+
+func TestRunPipelineFlagsPlaceholdersAndMakesTitleOneLine(t *testing.T) {
+	longDraft := "Objet : test\n" + strings.Repeat("mot ", 400)
+	liquid := strings.Replace(validLiquid, "Corps\n", "Corps [à confirmer]\n", 1)
+	client, _ := fakeAnthropic(t,
+		"CTA brief",
+		"draft",
+		"<revised_email>draft</revised_email>\nVERDICT: PASS",
+		"<humanized_email>"+longDraft+"</humanized_email>",
+		"<liquid_email>"+liquid+"</liquid_email>",
+		"<final_liquid>"+liquid+"</final_liquid>\nVERDICT: READY FOR PRODUCTION",
+	)
+	result, err := RunPipeline(context.Background(), client, PipelineInput{}, &reportRecorder{})
+	require.NoError(t, err)
+	assert.NotContains(t, result.TitleLiquid, "\n")
+	assert.NotContains(t, result.PreHeaderLiquid, "\n")
+	assert.Contains(t, result.BodyLiquid, "\n", "the body keeps its lines")
+	assert.Contains(t, strings.Join(result.Warnings, "\n"), "about 400 words")
+	assert.Contains(t, strings.Join(result.Warnings, "\n"), "[à confirmer]")
+}
