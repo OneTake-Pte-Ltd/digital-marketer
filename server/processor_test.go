@@ -214,12 +214,17 @@ func TestStepResultsGoInTheRunThread(t *testing.T) {
 	progress.result("step-b-draft", "Step B: first draft", "Objet : test", false)
 	progress.result("step-e-liquid", "Step E: Liquid", strings.Repeat("x", maxPostRunes), true)
 
-	require.Len(t, *posts, 3)
+	progress.result("step-c-reviewed", "Step C: reviewed draft", "  ", false)
+
+	require.Len(t, *posts, 4)
 	root := (*posts)[0].Id
 	assert.Equal(t, root, (*posts)[1].RootId)
 	assert.Contains(t, (*posts)[1].Message, "Objet : test")
+	assert.Len(t, (*posts)[1].FileIds, 1, "a short result is shown and attached")
 	assert.Equal(t, root, (*posts)[2].RootId)
-	assert.Equal(t, []string{"neil-2026-10-25-step-e-liquid.txt"}, *uploads)
+	assert.Contains(t, (*posts)[2].Message, "see the attached file")
+	assert.Contains(t, (*posts)[3].Message, "(empty)", "an empty result must be visible as such")
+	assert.Equal(t, []string{"neil-2026-10-25-step-b-draft.txt", "neil-2026-10-25-step-e-liquid.txt"}, *uploads)
 }
 
 func TestTranscribeMediaPostReusesStoredTranscription(t *testing.T) {
