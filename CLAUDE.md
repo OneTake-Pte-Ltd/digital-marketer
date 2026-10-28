@@ -19,8 +19,9 @@ server/
   main.go                   Entry point. Imports _ "time/tzdata" for embedded CET timezone data.
   plugin.go                 Plugin struct, OnActivate, OnDeactivate, ExecuteCommand,
                             MessageHasBeenPosted, ServeHTTP, postToChannel, registerWebhook,
-                            createPost (thread replies, attachments), postText (attaches text
-                            over maxPostRunes = 16383, Mattermost's message limit).
+                            createPost (thread replies, attachments), postText (always attaches
+                            the text; shows it inline too when it fits in maxPostRunes = 16383,
+                            Mattermost's message limit).
   api.go                    HTTP router. /telegram/webhook (no auth), /api/v1/* (auth-protected).
   configuration.go          Plugin settings struct, getConfiguration/setConfiguration,
                             OnConfigurationChange (re-registers Telegram webhook on save).
@@ -114,7 +115,7 @@ All fields map 1:1 to `plugin.json` settings. Access via `p.getConfiguration()` 
 
 ## Email Pipeline (Steps A–F)
 
-All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. `RunPipeline` reports to a `pipelineReporter`: `step` as each step starts, `result` with the output of steps A to E.
+All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. The answer is the concatenation of the response's `text` blocks: models that think by default (the Claude 5 family) return empty `thinking` blocks first. An answer with no text is an error; a `refusal` stop reason is a `permanentError`. `RunPipeline` reports to a `pipelineReporter`: `step` as each step starts, `result` with the output of steps A to E.
 
 | Step | Function | Input | Output | Retries |
 |---|---|---|---|---|

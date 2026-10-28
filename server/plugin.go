@@ -167,23 +167,26 @@ func (p *Plugin) attachText(filename, text string) (string, error) {
 	return info.Id, nil
 }
 
-// postText posts heading followed by text, in a code block when code is true. Text too
-// long for one post is attached as filename instead.
+// postText posts heading with text attached as filename. The text is also shown in the
+// message, in a code block when code is true, when it fits in one post.
 func (p *Plugin) postText(rootID, heading, text string, code bool, filename string) error {
-	body := text
-	if code {
-		body = "```liquid\n" + text + "\n```"
-	}
-	msg := heading + "\n" + body
-	if utf8.RuneCountInString(msg) <= maxPostRunes {
-		_, err := p.createPost(rootID, msg, nil)
+	if strings.TrimSpace(text) == "" {
+		_, err := p.createPost(rootID, heading+"\n_(empty)_", nil)
 		return err
 	}
 	fileID, err := p.attachText(filename, text)
 	if err != nil {
 		return fmt.Errorf("attach %s: %w", filename, err)
 	}
-	_, err = p.createPost(rootID, heading+"\n_Too long for one message; the full text is attached._", []string{fileID})
+	body := text
+	if code {
+		body = "```liquid\n" + text + "\n```"
+	}
+	msg := heading + "\n" + body
+	if utf8.RuneCountInString(msg) > maxPostRunes {
+		msg = heading + "\n_Too long to show here; see the attached file._"
+	}
+	_, err = p.createPost(rootID, msg, []string{fileID})
 	return err
 }
 

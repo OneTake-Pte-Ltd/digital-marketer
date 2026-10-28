@@ -126,11 +126,22 @@ func (a *anthropicClient) sendOnce(ctx context.Context, system, user string) (st
 	if result.StopReason == "max_tokens" {
 		return "", &permanentError{fmt.Errorf("%w (%d tokens)", errAnswerCutOff, maxTokens)}
 	}
-	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty response from API")
+	if result.StopReason == "refusal" {
+		return "", &permanentError{errors.New("the model declined to answer (stop reason: refusal)")}
 	}
 
-	return result.Content[0].Text, nil
+	// Models that think by default put thinking blocks (with empty text) before the
+	// answer, so only text blocks make up the answer.
+	var text strings.Builder
+	for _, block := range result.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+	if strings.TrimSpace(text.String()) == "" {
+		return "", fmt.Errorf("the answer contained no text (stop reason: %s)", result.StopReason)
+	}
+	return text.String(), nil
 }
 
 // retryWithBackoff retries fn up to maxAttempts times with exponential backoff. It stops

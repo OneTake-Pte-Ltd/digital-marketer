@@ -204,3 +204,26 @@ func TestStepFKeepsValidLiquidWhenAnswerIsCutOff(t *testing.T) {
 	assert.NotEmpty(t, warning)
 	assert.Equal(t, stepFMaxIterations, *calls)
 }
+
+// Models that think by default answer with an empty thinking block before the text.
+func TestSendSkipsThinkingBlocks(t *testing.T) {
+	client, _ := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"Objet : bonjour"}]}`)
+	out, err := client.Send(context.Background(), "system", "user")
+	require.NoError(t, err)
+	assert.Equal(t, "Objet : bonjour", out)
+}
+
+func TestSendRejectsAnswerWithoutText(t *testing.T) {
+	client, _ := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""}]}`)
+	_, err := client.Send(context.Background(), "system", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no text")
+}
+
+func TestSendDoesNotRetryRefusal(t *testing.T) {
+	client, calls := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"refusal","content":[]}`)
+	_, err := client.Send(context.Background(), "system", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declined")
+	assert.Equal(t, 1, *calls)
+}

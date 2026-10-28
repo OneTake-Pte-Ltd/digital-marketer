@@ -120,7 +120,7 @@ Users listed in **Users to Tag** and Mattermost system admins can run these comm
 
 As soon as a run starts, Neil posts a progress message and keeps editing it: one line per step, with the time it started (CET). When the run ends, the first line shows the outcome. If a run goes quiet, this message shows where it stopped.
 
-While the run goes on, Neil replies in that message's thread with each intermediate result, so you can check it is heading in the right direction: each transcription (marked when it was reused from an earlier run), the call to action brief (step A), the first draft (B), the reviewed draft (C), the humanized draft (D) and the six-language Liquid before the fluency check (E). A result too long for one Mattermost message is attached as a `.txt` file.
+While the run goes on, Neil replies in that message's thread with each intermediate result, so you can check it is heading in the right direction: each transcription (marked when it was reused from an earlier run), the call to action brief (step A), the first draft (B), the reviewed draft (C), the humanized draft (D) and the six-language Liquid before the fluency check (E). Each result is attached as a `.txt` file, and also shown in the message when it fits. An empty result is marked `(empty)`.
 
 Replaying a date doesn't fetch or transcribe the same audio again: the Bunny URL and transcription of each message are stored and reused. Only the email steps (A to F) run again.
 

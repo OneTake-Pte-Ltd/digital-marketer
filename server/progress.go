@@ -38,7 +38,7 @@ func (r *runProgress) step(name string) {
 }
 
 // result posts a step's output as a reply in the run's thread, so its direction can be
-// checked while the run goes on. Output too long for one message is attached as a file.
+// checked while the run goes on. The output is always attached as a .txt file.
 func (r *runProgress) result(slug, title, text string, liquid bool) {
 	rootID := ""
 	if r.post != nil {
