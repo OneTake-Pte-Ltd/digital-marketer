@@ -158,7 +158,7 @@ For this daily email, use the Personal Story format.
 Structure:
 - Subject line: emotional, first-person — specific and honest
 - Opening: drop the reader into the moment — specific time, place, situation
-- The story: honest, with a clear turning point. Take as much space as the story requires.
+- The story: honest, with a clear turning point. Keep it tight: the whole body (hook to signature, without the P.S.) is 250 to 350 words.
 - The lesson and bridge: what did the sender learn, and how does it connect to OneTake?
 - CTA: link to related content or product — natural, not forced
 - Images: if photos are available to illustrate the story, include them
@@ -298,6 +298,20 @@ Fractal summaries — cut all "In this section we will..." and "As we've seen...
 
 The signposted conclusion — cut "In conclusion...", "To sum up...", "In summary..."
 
+## Category 7: Active Voice and Full Sentences
+
+Passive voice and participle lists: name who acts and use an active verb. Not "silences enlevés, titres ajoutés" but "OneTake enlève les silences et ajoute les titres". Not "the video was edited in minutes" but "OneTake edited the video in minutes".
+
+Nominal phrases (sentences without a verb): write natural sentences with a subject and a verb. Not "A video to shoot. Five minutes left." but "You've got a video to shoot and only five minutes to do it." Not "Une vidéo à tourner. Cinq minutes devant toi." but "Tu as une vidéo à tourner et seulement cinq minutes pour le faire."
+
+## Category 8: Length
+
+Never make the copy longer. If the body (hook to signature, without the P.S.) is over 350 words, cut it to 250 to 350 words: remove repetitions, secondary details and extra examples, never the turning point of the story or the CTA.
+
+## Category 9: Placeholders
+
+The email goes out as written. Remove every placeholder, bracketed note or instruction to the sender (for example "[Trait physique à confirmer par Sébastien avant l'envoi.]"). Rewrite the sentence so it reads naturally without the missing detail. Never invent a detail to fill the gap.
+
 ## Verdict Format
 
 Output the full revised copy in one clean block — no tracked changes, no annotations.
@@ -397,8 +411,8 @@ Whenever a specific time is referenced:
 ## Output Format
 
 Three separate code blocks:
-- Title (single line per language, case switch)
-- Pre-header (single line per language, case switch)
+- Title: the whole case switch on one single line, with no line breaks, e.g. {%case user.language%}{% when 'fr' %}Titre{% when 'es' %}Título{% when 'pt' %}Título{% when 'it' %}Titolo{% when 'ja' %}タイトル{% else %}Title{% endcase %}
+- Pre-header: the whole case switch on one single line, same shape as the title
 - Message body (multi-line case switch, with {{snippets.en_signature_sebastien}})
 `
 

@@ -132,6 +132,8 @@ When the pipeline completes, Neil posts three Liquid code blocks to the configur
 - **Pre-header** — the inbox preview text in six languages
 - **Message body** — the full email in six languages, including UTM-tagged links and the signature snippet
 
+The title and pre-header are each one line, as UserList expects. The email body targets 250 to 350 words in French. Neil adds a warning under the email when the French body is longer, or when a placeholder in square brackets (for example `[à confirmer]`) is left in it.
+
 If no audio or video content was found for the day, Neil posts a warning and stops.
 
 If an audio or video post can't be uploaded or transcribed, Neil posts one warning for that message and writes the email from the other posts. If none of the day's audio or video posts could be transcribed, Neil posts a warning and generates no email.
