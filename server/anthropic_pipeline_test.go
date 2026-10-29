@@ -5,17 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-const validLiquid = "### Title\n```liquid\n{%case user.language%}\n{% when 'fr' %}\nBonjour\n{% else %}\nHello\n{% endcase %}\n```\n\n" +
-	"### Pre-header\n```liquid\n{%case user.language%}\n{% when 'fr' %}\nAperçu\n{% else %}\nPreview\n{% endcase %}\n```\n\n" +
-	"### Message body\n```liquid\n{%case user.language%}\n{% when 'fr' %}\nCorps\n## Un sous-titre\nSuite du corps\n{% else %}\nBody\n## A subheading\nMore body\n{% endcase %}\n{{snippets.en_signature_sebastien}}\n```"
 
 // fakeAnthropic serves the given replies in order, one per request, and records the prompts.
 func fakeAnthropic(t *testing.T, replies ...string) (*anthropicClient, *[]string) {
@@ -57,47 +52,6 @@ func TestFinalVerdict(t *testing.T) {
 	assert.Equal(t, "", finalVerdict("no verdict"))
 }
 
-func TestValidateLiquid(t *testing.T) {
-	assert.NoError(t, validateLiquid(validLiquid))
-	assert.Error(t, validateLiquid("You submitted the skill definition itself as the email to review."))
-	assert.Error(t, validateLiquid("{%case user.language%}{% endcase %}"), "no blocks")
-}
-
-func TestParseLiquidBlocksKeepsBodyHeadings(t *testing.T) {
-	title, preHeader, body := parseLiquidBlocks(validLiquid)
-	assert.Contains(t, title, "Bonjour")
-	assert.Contains(t, preHeader, "Preview")
-	assert.Contains(t, body, "## Un sous-titre\nSuite du corps")
-	assert.Contains(t, body, "{{snippets.en_signature_sebastien}}")
-	assert.False(t, strings.HasPrefix(body, "```"))
-}
-
-// Reproduces the 2026-10-13 failure: the fluency check replied with a complaint
-// instead of Liquid. The step E Liquid must be kept, never the complaint.
-func TestStepFKeepsValidLiquidWhenReviewerReturnsGarbage(t *testing.T) {
-	complaint := "You've caught something worth naming directly.\n## What Just Happened\nThere is nothing to fluency-check."
-	client, prompts := fakeAnthropic(t, complaint, complaint)
-
-	out, warning, err := stepF(context.Background(), client, validLiquid)
-	require.NoError(t, err)
-	assert.Equal(t, validLiquid, out)
-	assert.Contains(t, warning, "maximum iterations")
-	require.Len(t, *prompts, 2)
-	// The second pass reviews the Liquid again, not the first reply.
-	assert.Contains(t, (*prompts)[1], validLiquid)
-	assert.NotContains(t, (*prompts)[1], "worth naming directly")
-}
-
-func TestStepFUsesCorrectedLiquid(t *testing.T) {
-	corrected := strings.Replace(validLiquid, "Corps", "Corps corrigé", 1)
-	client, _ := fakeAnthropic(t, "French: NEEDS REVISION\n<final_liquid>\n"+corrected+"\n</final_liquid>\nVERDICT: READY FOR PRODUCTION")
-
-	out, warning, err := stepF(context.Background(), client, validLiquid)
-	require.NoError(t, err)
-	assert.Equal(t, corrected, out)
-	assert.Empty(t, warning)
-}
-
 func TestStepCCarriesOnlyTheRevisedEmail(t *testing.T) {
 	client, prompts := fakeAnthropic(t,
 		"Check 1 failed: weak subject.\n<revised_email>\nObjet : version 2\n</revised_email>\nVERDICT: NEEDS REVISION",
@@ -111,19 +65,6 @@ func TestStepCCarriesOnlyTheRevisedEmail(t *testing.T) {
 	require.Len(t, *prompts, 2)
 	assert.Contains(t, (*prompts)[1], "Objet : version 2")
 	assert.NotContains(t, (*prompts)[1], "weak subject")
-}
-
-func TestStepERejectsNonLiquid(t *testing.T) {
-	client, _ := fakeAnthropic(t, "Please paste the email.", "Still no email.")
-	_, err := stepE(context.Background(), client, PipelineInput{}, "draft", "brief")
-	assert.Error(t, err)
-}
-
-func TestStepERetriesOnce(t *testing.T) {
-	client, _ := fakeAnthropic(t, "Please paste the email.", "<liquid_email>\n"+validLiquid+"\n</liquid_email>")
-	out, err := stepE(context.Background(), client, PipelineInput{}, "draft", "brief")
-	require.NoError(t, err)
-	assert.Equal(t, validLiquid, out)
 }
 
 // fakeAnthropicStatus answers every request with the given status code and body, and counts calls.
@@ -165,47 +106,6 @@ func TestSendStopsRetryingWhenContextEnds(t *testing.T) {
 	assert.LessOrEqual(t, *calls, 1)
 }
 
-func TestRunPipelineReportsEachStep(t *testing.T) {
-	client, _ := fakeAnthropic(t,
-		"CTA brief",
-		"Objet : brouillon",
-		"<revised_email>Objet : revu</revised_email>\nVERDICT: PASS",
-		"<humanized_email>Objet : humain</humanized_email>",
-		"<liquid_email>"+validLiquid+"</liquid_email>",
-		"<final_liquid>"+validLiquid+"</final_liquid>\nVERDICT: READY FOR PRODUCTION",
-	)
-	rec := &reportRecorder{}
-	result, err := RunPipeline(context.Background(), client, PipelineInput{}, rec)
-	require.NoError(t, err)
-	assert.Contains(t, result.TitleLiquid, "Bonjour")
-	require.Len(t, rec.steps, 6)
-	assert.True(t, strings.HasPrefix(rec.steps[0], "Step A"))
-	assert.True(t, strings.HasPrefix(rec.steps[5], "Step F"))
-	assert.Equal(t, []string{"CTA brief", "Objet : brouillon", "Objet : revu", "Objet : humain", validLiquid}, rec.results)
-}
-
-// reportRecorder collects what RunPipeline reports.
-type reportRecorder struct {
-	steps   []string
-	results []string
-}
-
-func (r *reportRecorder) step(name string) { r.steps = append(r.steps, name) }
-func (r *reportRecorder) result(_, _, text string, _ bool) {
-	r.results = append(r.results, text)
-}
-
-func TestStepFKeepsValidLiquidWhenAnswerIsCutOff(t *testing.T) {
-	client, calls := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"max_tokens","content":[{"type":"text","text":"<final_liquid>### Ti"}]}`)
-
-	out, warning, err := stepF(context.Background(), client, validLiquid)
-	require.NoError(t, err)
-	assert.Equal(t, validLiquid, out)
-	assert.NotEmpty(t, warning)
-	assert.Equal(t, stepFMaxIterations, *calls)
-}
-
-// Models that think by default answer with an empty thinking block before the text.
 func TestSendSkipsThinkingBlocks(t *testing.T) {
 	client, _ := fakeAnthropicStatus(t, http.StatusOK, `{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"Objet : bonjour"}]}`)
 	out, err := client.Send(context.Background(), "system", "user")
@@ -233,34 +133,9 @@ func TestSingleLine(t *testing.T) {
 	assert.Equal(t, "{%case user.language%}{% when 'fr' %}100 % de bénéfice : la ceinture blanche{% else %}100% profit{% endcase %}", singleLine(in))
 }
 
-func TestFrenchBodyWords(t *testing.T) {
-	draft := "**Objet : un titre de cinq mots**\n\nUn deux trois.\nQuatre cinq.\n\nP.S. six sept huit"
-	assert.Equal(t, 5, frenchBodyWords(draft))
-}
-
 func TestFindPlaceholders(t *testing.T) {
 	text := "Suzanne Garrett. [Trait physique à confirmer par Sébastien avant l'envoi.] " +
 		"[Clique ici pour voir la vidéo](https://onetake.ai/?utm_source={{user.utm_source}}) " +
 		"{%case user.language%} [Trait physique à confirmer par Sébastien avant l'envoi.] [TODO]"
 	assert.Equal(t, []string{"[Trait physique à confirmer par Sébastien avant l'envoi.]", "[TODO]"}, findPlaceholders(text))
-}
-
-func TestRunPipelineFlagsPlaceholdersAndMakesTitleOneLine(t *testing.T) {
-	longDraft := "Objet : test\n" + strings.Repeat("mot ", 400)
-	liquid := strings.Replace(validLiquid, "Corps\n", "Corps [à confirmer]\n", 1)
-	client, _ := fakeAnthropic(t,
-		"CTA brief",
-		"draft",
-		"<revised_email>draft</revised_email>\nVERDICT: PASS",
-		"<humanized_email>"+longDraft+"</humanized_email>",
-		"<liquid_email>"+liquid+"</liquid_email>",
-		"<final_liquid>"+liquid+"</final_liquid>\nVERDICT: READY FOR PRODUCTION",
-	)
-	result, err := RunPipeline(context.Background(), client, PipelineInput{}, &reportRecorder{})
-	require.NoError(t, err)
-	assert.NotContains(t, result.TitleLiquid, "\n")
-	assert.NotContains(t, result.PreHeaderLiquid, "\n")
-	assert.Contains(t, result.BodyLiquid, "\n", "the body keeps its lines")
-	assert.Contains(t, strings.Join(result.Warnings, "\n"), "about 400 words")
-	assert.Contains(t, strings.Join(result.Warnings, "\n"), "[à confirmer]")
 }

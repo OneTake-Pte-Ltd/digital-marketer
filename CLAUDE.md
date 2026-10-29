@@ -33,13 +33,14 @@ server/
                             from panics, and holds its date in Plugin.runningDates.
   progress.go               runProgress: one Mattermost post per run, edited at each step;
                             mirrors the step into RunStatus.Step. result() replies in that
-                            post's thread with each transcription and the output of steps A-E. RunStatusReport and
+                            post's thread with each transcription, the output of steps A-D and
+                            each language version (steps E and F). RunStatusReport and
                             formatRunStatus back /neil status.
   types.go                  All shared structs: TelegramPost, MediaRecord, RunStatus, DayContext,
                             PipelineInput, PipelineResult, raw Telegram API types.
-  skills.go                 Eight Go string constants — one per prompt skill (email principles,
-                            CTA, nurture, copy review, humanize copy, Liquid output, fluency check,
-                            storyselling framework).
+  skills.go                 Eight Go string constants, one per prompt skill (email principles,
+                            CTA, nurture, copy review, humanize copy, language version, fluency
+                            check, storyselling framework).
   telegram.go               telegramClient: SetWebhook, DeleteWebhook, GetFileURL,
                             parseUpdate (converts raw Telegram update to TelegramPost).
   bunnycdn.go               bunnyCDNClient: FetchFile; POSTs the Telegram file URL to the Bunny
@@ -49,8 +50,13 @@ server/
   elevenlabs.go             elevenLabsClient: Transcribe — multipart POST to ElevenLabs Scribe v2
                             using the public CDN URL.
   anthropic_pipeline.go     anthropicClient (Send with 3-retry backoff), RunPipeline (A–F),
-                            stepA–stepF functions, buildContextSummary, parseLiquidBlocks,
-                            extractTagged, finalVerdict, validateLiquid.
+                            stepA-stepD, buildContextSummary, findPlaceholders,
+                            extractTagged, finalVerdict.
+  languages.go              emailLanguages (fr, es, pt, it, ja, English else branch);
+                            translateAll runs stepE and stepF per language, all at once;
+                            assembleEmail builds the Liquid switches and places the signature;
+                            parseLanguageVersion, singleLine.
+  languages_test.go         Per-language steps E/F, assembly, a failed language, RunPipeline.
   plugin_test.go            Smoke test: router initializes without panic.
   processor_test.go         RunProcessor against a fake KV store and mock API: progress post,
                             panic recovery, one run per date.
@@ -115,7 +121,7 @@ All fields map 1:1 to `plugin.json` settings. Access via `p.getConfiguration()` 
 
 ## Email Pipeline (Steps A–F)
 
-All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. The answer is the concatenation of the response's `text` blocks: models that think by default (the Claude 5 family) return empty `thinking` blocks first. An answer with no text is an error; a `refusal` stop reason is a `permanentError`. `RunPipeline` reports to a `pipelineReporter`: `step` as each step starts, `result` with the output of steps A to E.
+All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClient.Send(ctx, system, user)` with exponential backoff (3 attempts, 2s/4s delays). A `permanentError` (a 4xx other than 429, or an answer cut off at `maxTokens` = 16000) is not retried, and retries stop when the run's context ends. Steps C and F treat a cut-off answer like an unusable one and keep their current version; in the other steps it fails the run. Requests are non-streaming with a 10-minute HTTP timeout. The answer is the concatenation of the response's `text` blocks: models that think by default (the Claude 5 family) return empty `thinking` blocks first. An answer with no text is an error; a `refusal` stop reason is a `permanentError`. `RunPipeline` reports to a `pipelineReporter`: `step` as each step starts, `result` with the output of steps A to D and each language version.
 
 | Step | Function | Input | Output | Retries |
 |---|---|---|---|---|
@@ -123,20 +129,18 @@ All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClien
 | B | `stepB` | CTA brief, OfferDescription, DayContext summary, brand/audience/avatar/nurture/storyselling | Storyselling email draft (FR) | None |
 | C | `stepC` | Email draft | Reviewed draft from `<revised_email>`; loops up to 3× until `VERDICT: PASS` | Up to 3 iterations |
 | D | `stepD` | Reviewed draft | Humanized draft from `<humanized_email>` (AI artefacts removed) | None |
-| E | `stepE` | Humanized draft, CTA brief | Liquid code (6 languages) from `<liquid_email>`; must pass `validateLiquid` | 2 attempts, then the run fails |
-| F | `stepF` | Liquid output | Final Liquid from `<final_liquid>`; loops up to 2× until `VERDICT: READY FOR PRODUCTION` | Up to 2 iterations |
+| E | `stepE` (per language) | Humanized French draft, CTA brief, one language | That language's version from `<title>`, `<preheader>`, `<body>`, `<ps>` (no Liquid tags, no signature) | 2 attempts |
+| F | `stepF` (per language, not French) | One language version, French original for meaning | Corrected version from `<final_version>`; loops up to 2× until `VERDICT: READY FOR PRODUCTION` | Up to 2 iterations; never fails |
 
 Every step's input is wrapped in XML-style tags and every output is read back from tags with `extractTagged`. Only the extracted content moves to the next step or loop iteration; review notes and verdicts never do. `finalVerdict` reads the text after the last `VERDICT:`.
 
-`validateLiquid` requires a `{%case user.language%}` switch, an `endcase`, and parseable Title and Message body blocks. Step F keeps the last valid version: a fluency pass whose output fails validation is discarded and a warning is posted.
+Steps E and F run once per language in `languages.go`, all six languages at the same time (`translateAll`), so no request has to hold the whole six-language email. Step F keeps the last usable version: a fluency pass that can't be read, or fails, is discarded with a warning. If French or English fails at step E, the run fails; any other failed language is left out of the switch, so its readers get the English version, and a warning is posted.
+
+`assembleEmail` builds the Liquid in code: the title and pre-header are one-line case switches (UserList's fields are one line; `singleLine` joins any line breaks), the body a multi-line switch. Without a P.S., `{{snippets.en_signature_sebastien}}` goes once after `{% endcase %}`; with one, it goes before the P.S. inside each language. Blank lines are removed from bodies.
 
 `postEmailResult` posts the final email; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
 
-After step F, `RunPipeline` passes the Title and Pre-header through `singleLine` (UserList's fields are one line; line breaks next to Liquid tags are dropped, others become spaces). It adds a warning when the step D draft's French body (`frenchBodyWords`: no subject line, no P.S.) exceeds `maxBodyWords` (target 250 to 350), and when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email.
-
-The writing rules live in the prompts: length, no placeholders, active voice and full sentences are in step B's instructions, step C's extra checks and the humanize skill (categories 7 to 9); step E keeps the title and pre-header on one line.
-
-`parseLiquidBlocks` extracts the three `### Title`, `### Pre-header`, `### Message body` sections. Headings inside a code fence are treated as email content, so the body can use `##` subheadings. If parsing fails, the entire output is placed in the body.
+`RunPipeline` adds a warning when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email. The writing rules live in the prompts: no placeholders, active voice and full sentences are in step B's instructions, step C's extra checks and the humanize skill (categories 7 and 8). There is no length limit: the story takes the space it needs.
 
 ## Telegram Webhook Flow
 
@@ -178,9 +182,9 @@ To add a new pipeline step:
 3. Add the relevant skill content as a constant in `skills.go` if the step needs a new system prompt section.
 
 To change the email language set:
-- Update the `skillEmailLiquidOutput` constant in `skills.go`.
+- Update `emailLanguages` in `languages.go` (code and name; an empty code is the English else branch).
+- Update the tone, time and currency lists in the `skillEmailLanguageVersion` constant in `skills.go`.
 - Update the `skillEmailFluencyCheck` constant if the new language needs specific fluency notes.
-- No structural code changes are needed.
 
 To change the morning run time:
 - The job fires every hour via `cluster.MakeWaitForRoundedInterval(1*time.Hour)`.

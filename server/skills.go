@@ -158,7 +158,7 @@ For this daily email, use the Personal Story format.
 Structure:
 - Subject line: emotional, first-person — specific and honest
 - Opening: drop the reader into the moment — specific time, place, situation
-- The story: honest, with a clear turning point. Keep it tight: the whole body (hook to signature, without the P.S.) is 250 to 350 words.
+- The story: honest, with a clear turning point. Take as much space as the story requires.
 - The lesson and bridge: what did the sender learn, and how does it connect to OneTake?
 - CTA: link to related content or product — natural, not forced
 - Images: if photos are available to illustrate the story, include them
@@ -304,11 +304,7 @@ Passive voice and participle lists: name who acts and use an active verb. Not "s
 
 Nominal phrases (sentences without a verb): write natural sentences with a subject and a verb. Not "A video to shoot. Five minutes left." but "You've got a video to shoot and only five minutes to do it." Not "Une vidéo à tourner. Cinq minutes devant toi." but "Tu as une vidéo à tourner et seulement cinq minutes pour le faire."
 
-## Category 8: Length
-
-Never make the copy longer. If the body (hook to signature, without the P.S.) is over 350 words, cut it to 250 to 350 words: remove repetitions, secondary details and extra examples, never the turning point of the story or the CTA.
-
-## Category 9: Placeholders
+## Category 8: Placeholders
 
 The email goes out as written. Remove every placeholder, bracketed note or instruction to the sender (for example "[Trait physique à confirmer par Sébastien avant l'envoi.]"). Rewrite the sentence so it reads naturally without the missing detail. Never invent a detail to fill the gap.
 
@@ -317,49 +313,23 @@ The email goes out as written. Remove every placeholder, bracketed note or instr
 Output the full revised copy in one clean block — no tracked changes, no annotations.
 `
 
-// skillEmailLiquidOutput converts reviewed copy into production-ready Liquid code.
-const skillEmailLiquidOutput = `
-# Email Liquid Output
+// skillEmailLanguageVersion turns the reviewed French email into the version for one
+// language. Neil runs it once per language and assembles the Liquid itself.
+const skillEmailLanguageVersion = `
+# Email Language Version
 
-This skill takes a completed, humanized, reviewed email and produces the final Liquid code block ready for UserList.
+This skill turns a completed, humanized, reviewed email, written in French, into its version for one language, ready for UserList. Neil runs it once per language and builds the Liquid case switch itself: write only the requested language, and never write {% case %} or {% when %} tags.
 
 ## Deliverables
 
-For every email, produce Liquid code for three elements:
-1. Title — short, energetic, benefit-driven
-2. Pre-header — inbox preview line; must have shock value and incite curiosity
-3. Message body — full email content
-
-All three in six languages: French, Spanish, Brazilian Portuguese, Italian, Japanese, English.
-
-## Language Structure
-
-Use a case switch — never a series of if statements:
-
-` + "```liquid" + `
-{%case user.language%}
-{% when 'fr' %}
-CONTENU FRANÇAIS
-{% when 'es' %}
-CONTENIDO EN ESPAÑOL
-{% when 'pt' %}
-CONTEÚDO EM PORTUGUÊS DO BRAZIL
-{% when 'it' %}
-CONTENUTO IN ITALIANO
-{% when 'ja' %}
-日本語コンテンツ
-{% else %}
-ENGLISH CONTENT
-{% endcase %}
-` + "```" + `
-
-The {% else %} branch always contains the English version.
+1. Title: short, energetic, benefit-driven. One single line.
+2. Pre-header: the inbox preview line; it must have shock value and incite curiosity. One single line.
+3. Message body: the full email content, without the signature and without the P.S.
+4. P.S.: only if the source email has one.
 
 ## Signature
 
-If there is no P.S.: place ` + "`{{snippets.en_signature_sebastien}}`" + ` at the very end of the message body, after {% endcase %}. The snippet appears only once.
-
-If there is a P.S.: place the signature snippet before the P.S. in each language version (so the snippet appears once inside each language).
+Never write the signature snippet. Neil adds ` + "`{{snippets.en_signature_sebastien}}`" + ` in the right place.
 
 ## Text Formatting
 
@@ -371,7 +341,7 @@ If there is a P.S.: place the signature snippet before the P.S. in each language
 
 ## Tone
 
-Informal and friendly in all languages:
+Informal and friendly. The register for each language:
 - French: tu (never vous)
 - Spanish: tú (never usted)
 - Portuguese: Brazilian você informal register (never o senhor/a senhora)
@@ -407,20 +377,13 @@ Whenever a specific time is referenced:
 - Italian: Euros only
 - Japanese: Euros + Japanese Yen (1€ = 185 JPY)
 - English: Euros + US Dollars (1€ = 1.15 USD)
-
-## Output Format
-
-Three separate code blocks:
-- Title: the whole case switch on one single line, with no line breaks, e.g. {%case user.language%}{% when 'fr' %}Titre{% when 'es' %}Título{% when 'pt' %}Título{% when 'it' %}Titolo{% when 'ja' %}タイトル{% else %}Title{% endcase %}
-- Pre-header: the whole case switch on one single line, same shape as the title
-- Message body (multi-line case switch, with {{snippets.en_signature_sebastien}})
 `
 
 // skillEmailFluencyCheck reviews non-English language versions for native naturalness.
 const skillEmailFluencyCheck = `
 # Email Fluency Check
 
-This skill catches translation artefacts. It does not check structure, links, or Liquid syntax. It checks one thing: does each language version sound like it was written by a native speaker, for a native reader?
+This skill catches translation artefacts. It does not check structure, links, or Liquid syntax. It checks one thing: does this language version sound like it was written by a native speaker, for a native reader? Neil sends one language version at a time, with the French original for its meaning.
 
 ## The Standard
 
@@ -450,9 +413,11 @@ Italian — false cognates borrowed from French or English; loss of natural Ital
 
 Japanese — sentences following English subject-verb-object order rather than Japanese subject-object-verb; formal keigo where warm and casual is needed.
 
+English: French sentence structures and calques carried over from the original; a stiff, formal tone.
+
 ## Verdict Format
 
-For each language version:
+For the language version:
 PASS — reads as natively written.
 OR
 NEEDS REVISION — list issues with specific rewrites.
