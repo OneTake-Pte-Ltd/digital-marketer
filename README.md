@@ -120,7 +120,7 @@ Users listed in **Users to Tag** and Mattermost system admins can run these comm
 
 As soon as a run starts, Neil posts a progress message and keeps editing it: one line per step, with the time it started (CET). When the run ends, the first line shows the outcome. If a run goes quiet, this message shows where it stopped.
 
-While the run goes on, Neil replies in that message's thread with each intermediate result, so you can check it is heading in the right direction: each transcription (marked when it was reused from an earlier run), the call to action brief (step A), the first draft (B), the reviewed draft (C), the humanized draft (D) and the six-language Liquid before the fluency check (E). Each result is attached as a `.txt` file, and also shown in the message when it fits. An empty result is marked `(empty)`.
+While the run goes on, Neil replies in that message's thread with each intermediate result, so you can check it is heading in the right direction: each transcription (marked when it was reused from an earlier run), the call to action brief (step A), the first draft (B), the reviewed draft (C), the humanized draft (D) and each language version once it is translated and fluency-checked (E and F). Each result is attached as a `.txt` file, and also shown in the message when it fits. An empty result is marked `(empty)`.
 
 Replaying a date doesn't fetch or transcribe the same audio again: the Bunny URL and transcription of each message are stored and reused. Only the email steps (A to F) run again.
 
@@ -132,7 +132,7 @@ When the pipeline completes, Neil posts three Liquid code blocks to the configur
 - **Pre-header** — the inbox preview text in six languages
 - **Message body** — the full email in six languages, including UTM-tagged links and the signature snippet
 
-The title and pre-header are each one line, as UserList expects. The email body targets 250 to 350 words in French. Neil adds a warning under the email when the French body is longer, or when a placeholder in square brackets (for example `[à confirmer]`) is left in it.
+Each language is translated and fluency-checked separately, all at the same time, and Neil assembles the Liquid itself. The title and pre-header are each one line, as UserList expects. If a language other than French or English fails, it is left out and its readers get the English version; Neil adds a warning under the email. Neil also warns when a placeholder in square brackets (for example `[à confirmer]`) is left in the email.
 
 If no audio or video content was found for the day, Neil posts a warning and stops.
 
