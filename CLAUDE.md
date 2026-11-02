@@ -127,7 +127,7 @@ All steps are in `server/anthropic_pipeline.go`. Each step calls `anthropicClien
 |---|---|---|---|---|
 | A | `stepA` | DayContext, CTALinksFound, DefaultCTAURL | CTA brief (URL, text, placement) | None |
 | B | `stepB` | CTA brief, OfferDescription, DayContext summary, brand/audience/avatar/nurture/storyselling | Storyselling email draft (FR) | None |
-| C | `stepC` | Email draft | Reviewed draft from `<revised_email>`; loops up to 3× until `VERDICT: PASS` | Up to 3 iterations |
+| C | `stepC` | Email draft, CTA brief, source content (transcriptions) | Light edit: edited draft from `<revised_email>` and the list of changes from `<changes>`; only sentences breaking a check of `skillEmailCopyReview` change | One pass; keeps the step B draft with a warning when the answer has no usable email |
 | D | `stepD` | Reviewed draft | Humanized draft from `<humanized_email>` (AI artefacts removed) | None |
 | E | `stepE` (per language) | Humanized French draft, CTA brief, one language | That language's version from `<title>`, `<preheader>`, `<body>`, `<ps>` (no Liquid tags, no signature) | 2 attempts |
 | F | `stepF` (per language, not French) | One language version, French original for meaning | Corrected version from `<final_version>`; loops up to 2× until `VERDICT: READY FOR PRODUCTION` | Up to 2 iterations; never fails |
@@ -140,7 +140,7 @@ Steps E and F run once per language in `languages.go`, all six languages at the 
 
 `postEmailResult` posts the final email; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
 
-`RunPipeline` adds a warning when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email. The writing rules live in the prompts: no placeholders, active voice and full sentences are in step B's instructions, step C's extra checks and the humanize skill (categories 7 and 8). There is no length limit: the story takes the space it needs.
+`RunPipeline` adds a warning when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email. The writing rules live in the prompts: no placeholders, active voice and full sentences are in step B's instructions, step C's light edit checklist and the humanize skill (categories 7 and 8). There is no length limit: the story takes the space it needs.
 
 ## Telegram Webhook Flow
 

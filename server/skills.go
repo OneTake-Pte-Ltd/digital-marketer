@@ -178,74 +178,51 @@ Before finalizing:
 - Email does not try to make the sale — the landing page does
 `
 
-// skillEmailCopyReview is the 14-point review checklist applied to every email draft.
+// skillEmailCopyReview is the checklist of the step C light edit.
 const skillEmailCopyReview = `
-# Email Copy Review
+# Email Light Edit
 
-This skill runs a systematic check of completed email drafts. Every issue flagged must include a suggested rewrite — a flag without a fix is not a review.
+You are a light editor, not a rewriter. The draft is a story told in the sender's voice, and that voice is what makes it work. Change only the sentences that break one of the checks below, with the smallest change that fixes them. Copy every other sentence exactly as it is, word for word, in the same order and the same paragraphs. If nothing breaks a check, return the draft unchanged.
 
-## Check 1 — Subject Line
-- Does the subject line contain both a clear benefit AND a curiosity gap?
-- Is it front-loaded — most important word in the first 3 words?
-- Is it safe at 40 characters (mobile truncation)?
+Never add a greeting, a new paragraph, a new example or a detail that is not in the draft or the source content. Never shorten the story, merge or split paragraphs, or change the story's structure.
 
-## Check 2 — Structure: One Sentence, One Paragraph, One Page
-- First sentence must contain the most important idea
-- Each paragraph contains one distinct idea only
-- Sentences are short — flag any sentence with more than one "et/and"
+## Check 1: Subject Line
+- The subject line has a clear benefit and a curiosity gap, with the most important words first.
+- Change it only when it has neither a benefit nor a curiosity gap.
 
-## Check 3 — Parentheses
-- Are parentheses avoided or minimized?
-- No full paragraphs inside parentheses
+## Check 2: Parentheses
+- No full sentence or paragraph inside parentheses. Turn it into a normal sentence.
 
-## Check 4 — Bullet Lists
-- Bullet lists use proper list markup, not manual dashes
-- Each bullet is a complete, standalone idea
+## Check 3: Bullet Lists
+- Bullet lists use list markup, and each bullet is a complete idea.
 
-## Check 5 — Specificity
-Replace: quelque chose, une chose, des choses, bon, mauvais, meilleur, pire.
-Every vague word must become specific.
+## Check 4: New Concepts
+- A technical term a non-specialist would not understand gets a short explanation in the same sentence.
 
-## Check 6 — New Concepts
-Every term a non-specialist would not understand needs a definition.
+## Check 5: Inclusive Writing (French only)
+- No mid-word punctuation (seul.e, entrepreneur.e). Use epicene rewriting instead.
 
-## Check 7 — Real People
-When a real named person is mentioned: at least one character trait AND one physical trait.
-
-## Check 8 — Inclusive Writing (French only)
-No mid-word punctuation (seul.e, entrepreneur.e). Use epicene rewriting instead.
-
-## Check 9 — Banned Expressions
+## Check 6: Banned Expressions
 - "augmentez vos revenus" / "increase your income"
 - "gagnez plus d'argent" / "earn more money"
-- "d'ailleurs" (filler — always cut or rewrite)
+- "d'ailleurs" (filler: cut it)
 
-## Check 10 — First-Name Tag
-- Maximum one use per email
-- Always precede with a salutation: "Bonjour {{user.first_name | capitalize}},"
+## Check 7: "Si vous" Conditionals
+- "Si vous voulez [résultat], cliquez ici" is a violation. Rewrite it as a direct statement of the benefit.
+- A qualifying "if" at the very opening, to help readers self-select, is allowed.
 
-## Check 11 — "Si vous" Conditionals
-"Si vous voulez [résultat], cliquez ici" — always a violation. Rewrite as a direct statement of benefit.
-Exception: a qualifying "if" at the very opening to help readers self-select is allowed.
+## Check 8: One Call to Action
+- All links point to the CTA destination from the brief.
 
-## Check 12 — Links and CTAs
-- No more than one primary CTA destination
-- Every link must carry UTM parameters (note as a UTM reminder, not a blocking issue at this stage)
-- Every image has a centered caption and an ALT tag
+## Check 9: Facts
+- Every fact about people, events and numbers matches the source content. Fix or remove what doesn't; never invent a replacement.
 
-## Check 13 — Deadline and Urgency Integrity
-No "I changed my mind" emails that extend previously announced deadlines.
+## Check 10: Placeholders
+- No bracketed note, placeholder or instruction to the sender. Rewrite the sentence without the missing detail.
 
-## Check 14 — Sequence Continuity (for sequences)
-- Each email references the previous one naturally
-- Each email (except the last) ends with a forward reference to the next
-
-## Verdict Format
-
-For each email:
-PASS — no issues found.
-OR
-NEEDS REVISION — list issues with specific rewrites.
+## Check 11: Active Voice and Full Sentences
+- No passive constructions or participle lists ("silences enlevés, titres ajoutés"): name who acts ("OneTake enlève les silences et ajoute les titres").
+- No nominal phrases without a verb ("Une vidéo à tourner. Cinq minutes."): write full sentences ("Tu as une vidéo à tourner et seulement cinq minutes pour le faire.").
 `
 
 // skillHumanizeCopy removes AI writing artefacts from completed copy.

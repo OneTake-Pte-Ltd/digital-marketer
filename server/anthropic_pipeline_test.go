@@ -52,19 +52,28 @@ func TestFinalVerdict(t *testing.T) {
 	assert.Equal(t, "", finalVerdict("no verdict"))
 }
 
-func TestStepCCarriesOnlyTheRevisedEmail(t *testing.T) {
+func TestStepCMakesOneLightEdit(t *testing.T) {
 	client, prompts := fakeAnthropic(t,
-		"Check 1 failed: weak subject.\n<revised_email>\nObjet : version 2\n</revised_email>\nVERDICT: NEEDS REVISION",
-		"All good.\n<revised_email>\nObjet : version 3\n</revised_email>\nVERDICT: PASS",
+		"<changes>\n6: \"d'ailleurs, c'est simple\" -> \"c'est simple\"\n</changes>\n<revised_email>\nObjet : version 2\n</revised_email>",
 	)
+	input := PipelineInput{Context: DayContext{Date: "2026-11-01", Transcriptions: []TranscriptionEntry{{MessageID: 129, Transcription: "Suzanne enseigne le karaté."}}}}
 
-	out, warning, err := stepC(context.Background(), client, PipelineInput{}, "Objet : version 1")
+	out, changes, warning, err := stepC(context.Background(), client, input, "Objet : version 1", "brief")
 	require.NoError(t, err)
-	assert.Equal(t, "Objet : version 3", out)
+	assert.Equal(t, "Objet : version 2", out)
+	assert.Contains(t, changes, "d'ailleurs")
 	assert.Empty(t, warning)
-	require.Len(t, *prompts, 2)
-	assert.Contains(t, (*prompts)[1], "Objet : version 2")
-	assert.NotContains(t, (*prompts)[1], "weak subject")
+	require.Len(t, *prompts, 1, "one pass only")
+	assert.Contains(t, (*prompts)[0], "Suzanne enseigne le karaté.", "the editor sees the source facts")
+	assert.Contains(t, (*prompts)[0], "word for word")
+}
+
+func TestStepCKeepsDraftWithoutUsableEmail(t *testing.T) {
+	client, _ := fakeAnthropic(t, "I would change the subject line.")
+	out, _, warning, err := stepC(context.Background(), client, PipelineInput{}, "Objet : version 1", "brief")
+	require.NoError(t, err)
+	assert.Equal(t, "Objet : version 1", out)
+	assert.Contains(t, warning, "kept the step B draft")
 }
 
 // fakeAnthropicStatus answers every request with the given status code and body, and counts calls.

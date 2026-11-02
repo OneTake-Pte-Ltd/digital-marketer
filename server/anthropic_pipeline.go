@@ -207,13 +207,14 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 	}
 	report.result("step-b-draft", "Step B: first draft", emailDraft, false)
 
-	// Step C: Review the draft (up to 3 iterations)
-	report.step("Step C: reviewing the draft")
-	reviewedDraft, reviewWarning, err := stepC(ctx, client, input, emailDraft)
+	// Step C: Light edit (one pass, minimal changes)
+	report.step("Step C: light edit of the draft")
+	reviewedDraft, edits, reviewWarning, err := stepC(ctx, client, input, emailDraft, ctaBrief)
 	if err != nil {
-		return nil, fmt.Errorf("step C (review): %w", err)
+		return nil, fmt.Errorf("step C (light edit): %w", err)
 	}
-	report.result("step-c-reviewed", "Step C: reviewed draft", reviewedDraft, false)
+	report.result("step-c-edits", "Step C: changes made", edits, false)
+	report.result("step-c-reviewed", "Step C: edited draft", reviewedDraft, false)
 	if reviewWarning != "" {
 		warnings = append(warnings, reviewWarning)
 	}
@@ -399,53 +400,52 @@ Instructions:
 }
 
 const (
-	stepCMaxIterations = 3
 	stepEMaxAttempts   = 2
 	stepFMaxIterations = 2
 )
 
-func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, string, error) {
+// stepC is a light edit: one pass that changes only the sentences breaking a check of
+// skillEmailCopyReview and keeps the rest of the draft word for word. It returns the edited
+// draft and the list of changes. When the answer has no usable email, the draft is kept.
+func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, draft, ctaBrief string) (edited, changes, warning string, err error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
-		"# Audience Segment\n" + input.AudienceSegment,
-		"# Email Principles\n" + skillEmailPrinciples,
-		"# Email Copy Review\n" + skillEmailCopyReview,
+		"# Storyselling Framework\n" + storysellingFramework,
+		"# Light Edit Checklist\n" + skillEmailCopyReview,
 	}, "\n\n---\n\n")
 
-	current := draft
-	for range stepCMaxIterations {
-		user := fmt.Sprintf(`Review the email draft below against all 14 checks, plus these two:
-- Placeholders: no bracketed note, placeholder or instruction to the sender may remain. Rewrite the sentence without the missing detail; never invent one.
-- Active voice and full sentences: no passive constructions or participle lists ("silences enlevés"), no nominal phrases without a verb.
-For every issue found, provide a specific rewrite.
+	user := fmt.Sprintf(`Edit the email draft below against the light edit checklist.
 
-Then output the complete corrected email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags. Put only the email inside the tags, with no review notes.
-End your response with a final line: VERDICT: PASS or VERDICT: NEEDS REVISION
+Change only the sentences that break a check, with the smallest possible change. Copy every other sentence word for word. If no sentence breaks a check, return the draft unchanged.
+
+First, list each change between <changes> and </changes>, one per line: the check number, the original sentence, then the new one. Write "None" if you made no change.
+Then output the complete email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags, with nothing else inside the tags.
+
+## CTA Brief
+%s
+
+## Source content (the facts the email may use)
+<telegram_content>
+%s
+</telegram_content>
 
 <email_draft>
 %s
-</email_draft>`, current)
+</email_draft>`, ctaBrief, buildContextSummary(input), draft)
 
-		result, err := client.Send(ctx, system, user)
-		if errors.Is(err, errAnswerCutOff) {
-			// A review too long to finish is skipped; the current draft stays.
-			continue
-		}
-		if err != nil {
-			return current, "", err
-		}
-
-		// Only the corrected email is carried forward; review notes are dropped.
-		if revised, ok := extractTagged(result, "revised_email"); ok {
-			current = revised
-		}
-
-		verdict := finalVerdict(result)
-		if strings.Contains(verdict, "PASS") && !strings.Contains(verdict, "NEEDS REVISION") {
-			return current, "", nil
-		}
+	result, err := client.Send(ctx, system, user)
+	if errors.Is(err, errAnswerCutOff) {
+		return draft, "", "⚠️ The step C edit was too long to finish; kept the step B draft.", nil
 	}
-	return current, fmt.Sprintf("⚠️ Email copy review loop reached maximum iterations (%d). Proceeding with best available version.", stepCMaxIterations), nil
+	if err != nil {
+		return draft, "", "", err
+	}
+	revised, ok := extractTagged(result, "revised_email")
+	if !ok {
+		return draft, "", "⚠️ The step C edit returned no usable email; kept the step B draft.", nil
+	}
+	changes, _ = extractTagged(result, "changes")
+	return revised, changes, "", nil
 }
 
 func stepD(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, error) {

@@ -126,8 +126,8 @@ func pipelineReplies(failing ...string) func(user string) string {
 			}
 		}
 		switch {
-		case strings.HasPrefix(user, "Review the email draft"):
-			return "<revised_email>Objet : revu</revised_email>\nVERDICT: PASS"
+		case strings.HasPrefix(user, "Edit the email draft"):
+			return "<changes>None</changes>\n<revised_email>Objet : revu</revised_email>"
 		case strings.Contains(user, "humanize it"):
 			return "<humanized_email>Objet : humain</humanized_email>"
 		case strings.Contains(user, "Write a storyselling"):
@@ -149,6 +149,8 @@ func TestRunPipelineAssemblesEveryLanguage(t *testing.T) {
 	assert.Contains(t, strings.Join(result.Warnings, "\n"), "Italian readers get the English version")
 	assert.Contains(t, strings.Join(result.Warnings, "\n"), "[à confirmer]")
 
+	assert.Equal(t, "Objet : revu", rec.results["step-c-reviewed"])
+	assert.Equal(t, "None", rec.results["step-c-edits"])
 	assert.Equal(t, "Objet : humain", rec.results["step-d-humanized"])
 	assert.Contains(t, rec.results["lang-es"], "Body Spanish")
 	assert.Contains(t, rec.results["lang-en"], "Body English")
