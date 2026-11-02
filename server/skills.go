@@ -158,7 +158,7 @@ For this daily email, use the Personal Story format.
 Structure:
 - Subject line: emotional, first-person — specific and honest
 - Opening: drop the reader into the moment — specific time, place, situation
-- The story: honest, with a clear turning point. Keep it tight: the whole body (hook to signature, without the P.S.) is 250 to 350 words.
+- The story: honest, with a clear turning point. Take as much space as the story requires.
 - The lesson and bridge: what did the sender learn, and how does it connect to OneTake?
 - CTA: link to related content or product — natural, not forced
 - Images: if photos are available to illustrate the story, include them
@@ -178,74 +178,51 @@ Before finalizing:
 - Email does not try to make the sale — the landing page does
 `
 
-// skillEmailCopyReview is the 14-point review checklist applied to every email draft.
+// skillEmailCopyReview is the checklist of the step C light edit.
 const skillEmailCopyReview = `
-# Email Copy Review
+# Email Light Edit
 
-This skill runs a systematic check of completed email drafts. Every issue flagged must include a suggested rewrite — a flag without a fix is not a review.
+You are a light editor, not a rewriter. The draft is a story told in the sender's voice, and that voice is what makes it work. Change only the sentences that break one of the checks below, with the smallest change that fixes them. Copy every other sentence exactly as it is, word for word, in the same order and the same paragraphs. If nothing breaks a check, return the draft unchanged.
 
-## Check 1 — Subject Line
-- Does the subject line contain both a clear benefit AND a curiosity gap?
-- Is it front-loaded — most important word in the first 3 words?
-- Is it safe at 40 characters (mobile truncation)?
+Never add a greeting, a new paragraph, a new example or a detail that is not in the draft or the source content. Never shorten the story, merge or split paragraphs, or change the story's structure.
 
-## Check 2 — Structure: One Sentence, One Paragraph, One Page
-- First sentence must contain the most important idea
-- Each paragraph contains one distinct idea only
-- Sentences are short — flag any sentence with more than one "et/and"
+## Check 1: Subject Line
+- The subject line has a clear benefit and a curiosity gap, with the most important words first.
+- Change it only when it has neither a benefit nor a curiosity gap.
 
-## Check 3 — Parentheses
-- Are parentheses avoided or minimized?
-- No full paragraphs inside parentheses
+## Check 2: Parentheses
+- No full sentence or paragraph inside parentheses. Turn it into a normal sentence.
 
-## Check 4 — Bullet Lists
-- Bullet lists use proper list markup, not manual dashes
-- Each bullet is a complete, standalone idea
+## Check 3: Bullet Lists
+- Bullet lists use list markup, and each bullet is a complete idea.
 
-## Check 5 — Specificity
-Replace: quelque chose, une chose, des choses, bon, mauvais, meilleur, pire.
-Every vague word must become specific.
+## Check 4: New Concepts
+- A technical term a non-specialist would not understand gets a short explanation in the same sentence.
 
-## Check 6 — New Concepts
-Every term a non-specialist would not understand needs a definition.
+## Check 5: Inclusive Writing (French only)
+- No mid-word punctuation (seul.e, entrepreneur.e). Use epicene rewriting instead.
 
-## Check 7 — Real People
-When a real named person is mentioned: at least one character trait AND one physical trait.
-
-## Check 8 — Inclusive Writing (French only)
-No mid-word punctuation (seul.e, entrepreneur.e). Use epicene rewriting instead.
-
-## Check 9 — Banned Expressions
+## Check 6: Banned Expressions
 - "augmentez vos revenus" / "increase your income"
 - "gagnez plus d'argent" / "earn more money"
-- "d'ailleurs" (filler — always cut or rewrite)
+- "d'ailleurs" (filler: cut it)
 
-## Check 10 — First-Name Tag
-- Maximum one use per email
-- Always precede with a salutation: "Bonjour {{user.first_name | capitalize}},"
+## Check 7: "Si vous" Conditionals
+- "Si vous voulez [résultat], cliquez ici" is a violation. Rewrite it as a direct statement of the benefit.
+- A qualifying "if" at the very opening, to help readers self-select, is allowed.
 
-## Check 11 — "Si vous" Conditionals
-"Si vous voulez [résultat], cliquez ici" — always a violation. Rewrite as a direct statement of benefit.
-Exception: a qualifying "if" at the very opening to help readers self-select is allowed.
+## Check 8: One Call to Action
+- All links point to the CTA destination from the brief.
 
-## Check 12 — Links and CTAs
-- No more than one primary CTA destination
-- Every link must carry UTM parameters (note as a UTM reminder, not a blocking issue at this stage)
-- Every image has a centered caption and an ALT tag
+## Check 9: Facts
+- Every fact about people, events and numbers matches the source content. Fix or remove what doesn't; never invent a replacement.
 
-## Check 13 — Deadline and Urgency Integrity
-No "I changed my mind" emails that extend previously announced deadlines.
+## Check 10: Placeholders
+- No bracketed note, placeholder or instruction to the sender. Rewrite the sentence without the missing detail.
 
-## Check 14 — Sequence Continuity (for sequences)
-- Each email references the previous one naturally
-- Each email (except the last) ends with a forward reference to the next
-
-## Verdict Format
-
-For each email:
-PASS — no issues found.
-OR
-NEEDS REVISION — list issues with specific rewrites.
+## Check 11: Active Voice and Full Sentences
+- No passive constructions or participle lists ("silences enlevés, titres ajoutés"): name who acts ("OneTake enlève les silences et ajoute les titres").
+- No nominal phrases without a verb ("Une vidéo à tourner. Cinq minutes."): write full sentences ("Tu as une vidéo à tourner et seulement cinq minutes pour le faire.").
 `
 
 // skillHumanizeCopy removes AI writing artefacts from completed copy.
@@ -304,11 +281,7 @@ Passive voice and participle lists: name who acts and use an active verb. Not "s
 
 Nominal phrases (sentences without a verb): write natural sentences with a subject and a verb. Not "A video to shoot. Five minutes left." but "You've got a video to shoot and only five minutes to do it." Not "Une vidéo à tourner. Cinq minutes devant toi." but "Tu as une vidéo à tourner et seulement cinq minutes pour le faire."
 
-## Category 8: Length
-
-Never make the copy longer. If the body (hook to signature, without the P.S.) is over 350 words, cut it to 250 to 350 words: remove repetitions, secondary details and extra examples, never the turning point of the story or the CTA.
-
-## Category 9: Placeholders
+## Category 8: Placeholders
 
 The email goes out as written. Remove every placeholder, bracketed note or instruction to the sender (for example "[Trait physique à confirmer par Sébastien avant l'envoi.]"). Rewrite the sentence so it reads naturally without the missing detail. Never invent a detail to fill the gap.
 
@@ -317,49 +290,23 @@ The email goes out as written. Remove every placeholder, bracketed note or instr
 Output the full revised copy in one clean block — no tracked changes, no annotations.
 `
 
-// skillEmailLiquidOutput converts reviewed copy into production-ready Liquid code.
-const skillEmailLiquidOutput = `
-# Email Liquid Output
+// skillEmailLanguageVersion turns the reviewed French email into the version for one
+// language. Neil runs it once per language and assembles the Liquid itself.
+const skillEmailLanguageVersion = `
+# Email Language Version
 
-This skill takes a completed, humanized, reviewed email and produces the final Liquid code block ready for UserList.
+This skill turns a completed, humanized, reviewed email, written in French, into its version for one language, ready for UserList. Neil runs it once per language and builds the Liquid case switch itself: write only the requested language, and never write {% case %} or {% when %} tags.
 
 ## Deliverables
 
-For every email, produce Liquid code for three elements:
-1. Title — short, energetic, benefit-driven
-2. Pre-header — inbox preview line; must have shock value and incite curiosity
-3. Message body — full email content
-
-All three in six languages: French, Spanish, Brazilian Portuguese, Italian, Japanese, English.
-
-## Language Structure
-
-Use a case switch — never a series of if statements:
-
-` + "```liquid" + `
-{%case user.language%}
-{% when 'fr' %}
-CONTENU FRANÇAIS
-{% when 'es' %}
-CONTENIDO EN ESPAÑOL
-{% when 'pt' %}
-CONTEÚDO EM PORTUGUÊS DO BRAZIL
-{% when 'it' %}
-CONTENUTO IN ITALIANO
-{% when 'ja' %}
-日本語コンテンツ
-{% else %}
-ENGLISH CONTENT
-{% endcase %}
-` + "```" + `
-
-The {% else %} branch always contains the English version.
+1. Title: short, energetic, benefit-driven. One single line.
+2. Pre-header: the inbox preview line; it must have shock value and incite curiosity. One single line.
+3. Message body: the full email content, without the signature and without the P.S.
+4. P.S.: only if the source email has one.
 
 ## Signature
 
-If there is no P.S.: place ` + "`{{snippets.en_signature_sebastien}}`" + ` at the very end of the message body, after {% endcase %}. The snippet appears only once.
-
-If there is a P.S.: place the signature snippet before the P.S. in each language version (so the snippet appears once inside each language).
+Never write the signature snippet. Neil adds ` + "`{{snippets.en_signature_sebastien}}`" + ` in the right place.
 
 ## Text Formatting
 
@@ -371,7 +318,7 @@ If there is a P.S.: place the signature snippet before the P.S. in each language
 
 ## Tone
 
-Informal and friendly in all languages:
+Informal and friendly. The register for each language:
 - French: tu (never vous)
 - Spanish: tú (never usted)
 - Portuguese: Brazilian você informal register (never o senhor/a senhora)
@@ -407,20 +354,13 @@ Whenever a specific time is referenced:
 - Italian: Euros only
 - Japanese: Euros + Japanese Yen (1€ = 185 JPY)
 - English: Euros + US Dollars (1€ = 1.15 USD)
-
-## Output Format
-
-Three separate code blocks:
-- Title: the whole case switch on one single line, with no line breaks, e.g. {%case user.language%}{% when 'fr' %}Titre{% when 'es' %}Título{% when 'pt' %}Título{% when 'it' %}Titolo{% when 'ja' %}タイトル{% else %}Title{% endcase %}
-- Pre-header: the whole case switch on one single line, same shape as the title
-- Message body (multi-line case switch, with {{snippets.en_signature_sebastien}})
 `
 
 // skillEmailFluencyCheck reviews non-English language versions for native naturalness.
 const skillEmailFluencyCheck = `
 # Email Fluency Check
 
-This skill catches translation artefacts. It does not check structure, links, or Liquid syntax. It checks one thing: does each language version sound like it was written by a native speaker, for a native reader?
+This skill catches translation artefacts. It does not check structure, links, or Liquid syntax. It checks one thing: does this language version sound like it was written by a native speaker, for a native reader? Neil sends one language version at a time, with the French original for its meaning.
 
 ## The Standard
 
@@ -450,9 +390,11 @@ Italian — false cognates borrowed from French or English; loss of natural Ital
 
 Japanese — sentences following English subject-verb-object order rather than Japanese subject-object-verb; formal keigo where warm and casual is needed.
 
+English: French sentence structures and calques carried over from the original; a stiff, formal tone.
+
 ## Verdict Format
 
-For each language version:
+For the language version:
 PASS — reads as natively written.
 OR
 NEEDS REVISION — list issues with specific rewrites.

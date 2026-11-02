@@ -207,13 +207,14 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 	}
 	report.result("step-b-draft", "Step B: first draft", emailDraft, false)
 
-	// Step C: Review the draft (up to 3 iterations)
-	report.step("Step C: reviewing the draft")
-	reviewedDraft, reviewWarning, err := stepC(ctx, client, input, emailDraft)
+	// Step C: Light edit (one pass, minimal changes)
+	report.step("Step C: light edit of the draft")
+	reviewedDraft, edits, reviewWarning, err := stepC(ctx, client, input, emailDraft, ctaBrief)
 	if err != nil {
-		return nil, fmt.Errorf("step C (review): %w", err)
+		return nil, fmt.Errorf("step C (light edit): %w", err)
 	}
-	report.result("step-c-reviewed", "Step C: reviewed draft", reviewedDraft, false)
+	report.result("step-c-edits", "Step C: changes made", edits, false)
+	report.result("step-c-reviewed", "Step C: edited draft", reviewedDraft, false)
 	if reviewWarning != "" {
 		warnings = append(warnings, reviewWarning)
 	}
@@ -226,32 +227,15 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 	}
 	report.result("step-d-humanized", "Step D: humanized draft", humanizedDraft, false)
 
-	// Step E: Produce Liquid output
-	report.step("Step E: translating into 6 languages (Liquid)")
-	liquidOutput, err := stepE(ctx, client, input, humanizedDraft, ctaBrief)
+	// Steps E and F: one version per language, all at the same time, assembled in code
+	report.step("Steps E and F: translating and fluency-checking the 6 languages")
+	versions, languageWarnings, err := translateAll(ctx, client, input, humanizedDraft, ctaBrief, report)
 	if err != nil {
-		return nil, fmt.Errorf("step E (liquid): %w", err)
+		return nil, err
 	}
-	report.result("step-e-liquid", "Step E: six-language Liquid, before the fluency check", liquidOutput, true)
+	warnings = append(warnings, languageWarnings...)
 
-	// Step F: Fluency check (up to 2 iterations)
-	report.step("Step F: checking translation fluency")
-	finalLiquid, fluencyWarning, err := stepF(ctx, client, liquidOutput)
-	if err != nil {
-		return nil, fmt.Errorf("step F (fluency): %w", err)
-	}
-	if fluencyWarning != "" {
-		warnings = append(warnings, fluencyWarning)
-	}
-
-	// Parse the three blocks from the final output. UserList's title and pre-header are
-	// one-line fields, whatever line breaks the model put in.
-	title, preHeader, body := parseLiquidBlocks(finalLiquid)
-	title, preHeader = singleLine(title), singleLine(preHeader)
-
-	if n := frenchBodyWords(humanizedDraft); n > maxBodyWords {
-		warnings = append(warnings, fmt.Sprintf("⚠️ The French body has about %d words; the target is %d to %d.", n, minBodyWords, maxBodyWords))
-	}
+	title, preHeader, body := assembleEmail(versions)
 	if found := findPlaceholders(title + "\n" + preHeader + "\n" + body); len(found) > 0 {
 		warnings = append(warnings, "⚠️ Placeholders left in the email, to fix before sending: "+strings.Join(found, ", "))
 	}
@@ -262,49 +246,6 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 		BodyLiquid:      body,
 		Warnings:        warnings,
 	}, nil
-}
-
-// Target length of the French body, from the hook to the signature, without the P.S.
-const (
-	minBodyWords = 250
-	maxBodyWords = 350
-)
-
-// singleLine joins a Liquid block's lines into one line. A line break next to a Liquid
-// tag carries no content and is dropped; one between two lines of text becomes a space.
-func singleLine(liquid string) string {
-	var sb strings.Builder
-	prev := ""
-	for _, line := range strings.Split(liquid, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if prev != "" && !strings.HasSuffix(prev, "%}") && !strings.HasPrefix(line, "{%") {
-			sb.WriteString(" ")
-		}
-		sb.WriteString(line)
-		prev = line
-	}
-	return sb.String()
-}
-
-// frenchBodyWords counts the words of a draft's body: the subject line and the P.S. are
-// left out.
-func frenchBodyWords(draft string) int {
-	words := 0
-	for i, line := range strings.Split(strings.TrimSpace(draft), "\n") {
-		trimmed := strings.TrimSpace(strings.Trim(line, "*#_ "))
-		lower := strings.ToLower(trimmed)
-		if i == 0 && (strings.HasPrefix(lower, "objet") || strings.HasPrefix(lower, "subject")) {
-			continue
-		}
-		if strings.HasPrefix(lower, "p.s") || strings.HasPrefix(lower, "ps :") || strings.HasPrefix(lower, "ps:") {
-			break
-		}
-		words += len(strings.Fields(trimmed))
-	}
-	return words
 }
 
 // bracketRe matches text in square brackets; a following "(" marks a Markdown link.
@@ -446,7 +387,6 @@ Instructions:
 - Write the subject line using the benefit + curiosity formula
 - Include a P.S. if it strengthens the email
 - Write in French (the target language for the daily email)
-- Length: the body (hook to signature, without the P.S.) is 250 to 350 words. Tell one story, with one turning point
 - Use only facts from the transcription. Never write a placeholder, a bracketed note or an instruction to Sébastien (no "[à confirmer]"); if a detail is missing, write the sentence without it
 - Use the active voice and name who acts ("OneTake enlève les silences", not "silences enlevés"). Write full sentences with a verb, not nominal phrases ("Tu as une vidéo à tourner et seulement cinq minutes pour le faire", not "Une vidéo à tourner. Cinq minutes.")
 - Output: subject line, email body, and P.S. if applicable`,
@@ -460,54 +400,52 @@ Instructions:
 }
 
 const (
-	stepCMaxIterations = 3
 	stepEMaxAttempts   = 2
 	stepFMaxIterations = 2
 )
 
-func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, string, error) {
+// stepC is a light edit: one pass that changes only the sentences breaking a check of
+// skillEmailCopyReview and keeps the rest of the draft word for word. It returns the edited
+// draft and the list of changes. When the answer has no usable email, the draft is kept.
+func stepC(ctx context.Context, client *anthropicClient, input PipelineInput, draft, ctaBrief string) (edited, changes, warning string, err error) {
 	system := strings.Join([]string{
 		"# Brand Profile\n" + input.BrandProfile,
-		"# Audience Segment\n" + input.AudienceSegment,
-		"# Email Principles\n" + skillEmailPrinciples,
-		"# Email Copy Review\n" + skillEmailCopyReview,
+		"# Storyselling Framework\n" + storysellingFramework,
+		"# Light Edit Checklist\n" + skillEmailCopyReview,
 	}, "\n\n---\n\n")
 
-	current := draft
-	for range stepCMaxIterations {
-		user := fmt.Sprintf(`Review the email draft below against all 14 checks, plus these three:
-- Length: the body (hook to signature, without the P.S.) is 250 to 350 words. If it is longer, cut it.
-- Placeholders: no bracketed note, placeholder or instruction to the sender may remain. Rewrite the sentence without the missing detail; never invent one.
-- Active voice and full sentences: no passive constructions or participle lists ("silences enlevés"), no nominal phrases without a verb.
-For every issue found, provide a specific rewrite.
+	user := fmt.Sprintf(`Edit the email draft below against the light edit checklist.
 
-Then output the complete corrected email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags. Put only the email inside the tags, with no review notes.
-End your response with a final line: VERDICT: PASS or VERDICT: NEEDS REVISION
+Change only the sentences that break a check, with the smallest possible change. Copy every other sentence word for word. If no sentence breaks a check, return the draft unchanged.
+
+First, list each change between <changes> and </changes>, one per line: the check number, the original sentence, then the new one. Write "None" if you made no change.
+Then output the complete email (subject line, body, and P.S. if any) between <revised_email> and </revised_email> tags, with nothing else inside the tags.
+
+## CTA Brief
+%s
+
+## Source content (the facts the email may use)
+<telegram_content>
+%s
+</telegram_content>
 
 <email_draft>
 %s
-</email_draft>`, current)
+</email_draft>`, ctaBrief, buildContextSummary(input), draft)
 
-		result, err := client.Send(ctx, system, user)
-		if errors.Is(err, errAnswerCutOff) {
-			// A review too long to finish is skipped; the current draft stays.
-			continue
-		}
-		if err != nil {
-			return current, "", err
-		}
-
-		// Only the corrected email is carried forward; review notes are dropped.
-		if revised, ok := extractTagged(result, "revised_email"); ok {
-			current = revised
-		}
-
-		verdict := finalVerdict(result)
-		if strings.Contains(verdict, "PASS") && !strings.Contains(verdict, "NEEDS REVISION") {
-			return current, "", nil
-		}
+	result, err := client.Send(ctx, system, user)
+	if errors.Is(err, errAnswerCutOff) {
+		return draft, "", "⚠️ The step C edit was too long to finish; kept the step B draft.", nil
 	}
-	return current, fmt.Sprintf("⚠️ Email copy review loop reached maximum iterations (%d). Proceeding with best available version.", stepCMaxIterations), nil
+	if err != nil {
+		return draft, "", "", err
+	}
+	revised, ok := extractTagged(result, "revised_email")
+	if !ok {
+		return draft, "", "⚠️ The step C edit returned no usable email; kept the step B draft.", nil
+	}
+	changes, _ = extractTagged(result, "changes")
+	return revised, changes, "", nil
 }
 
 func stepD(ctx context.Context, client *anthropicClient, input PipelineInput, draft string) (string, error) {
@@ -518,7 +456,7 @@ func stepD(ctx context.Context, client *anthropicClient, input PipelineInput, dr
 
 	user := fmt.Sprintf(`Review the email below for AI writing artefacts and humanize it.
 Remove patterns that mark it as machine-generated. Preserve meaning, structure, and brand voice.
-Apply every category, including active voice and full sentences (7), length (8: 250 to 350 words for the body, never longer than the input) and placeholders (9: none may remain).
+Apply every category, including active voice and full sentences (7) and placeholders (8: none may remain).
 Output the full revised copy between <humanized_email> and </humanized_email> tags, with no annotations or commentary inside the tags.
 
 <email>
@@ -533,111 +471,6 @@ Output the full revised copy between <humanized_email> and </humanized_email> ta
 		return humanized, nil
 	}
 	return strings.TrimSpace(result), nil
-}
-
-func stepE(ctx context.Context, client *anthropicClient, input PipelineInput, draft, ctaBrief string) (string, error) {
-	system := strings.Join([]string{
-		"# Brand Profile\n" + input.BrandProfile,
-		"# Liquid Output Rules\n" + skillEmailLiquidOutput,
-	}, "\n\n---\n\n")
-
-	user := fmt.Sprintf(`Convert the email below into production-ready Liquid code for UserList.
-
-Produce three blocks:
-1. Title (subject line)
-2. Pre-header
-3. Message body
-
-Each block must contain all six languages (French, Spanish, Brazilian Portuguese, Italian, Japanese, English) using a case switch on user.language. The else branch is English.
-The Title and Pre-header blocks are each one single line: the whole case switch, from {%%case user.language%%} to {%% endcase %%}, with no line break.
-Keep the active voice and full sentences of the source in every language.
-
-CTA Brief (for URL and anchor text):
-%s
-
-Campaign slug: daily-nurture
-Content slug: derive from the email story topic in kebab-case
-
-Apply all formatting rules:
-- Single carriage returns only
-- Primary CTA on its own line with no trailing period
-- Signature snippet at the end: {{snippets.en_signature_sebastien}}
-- UTM parameters on every link
-- Localized time and currency
-- Informal register in all languages
-
-Output format: put the three blocks between <liquid_email> and </liquid_email> tags. Inside the tags, each block starts with its heading (### Title, ### Pre-header, ### Message body) followed by its Liquid code in a `+"```liquid"+` fenced code block. Nothing else goes inside the tags.
-
-<email>
-%s
-</email>`,
-		ctaBrief,
-		draft,
-	)
-
-	var lastErr error
-	for range stepEMaxAttempts {
-		result, err := client.Send(ctx, system, user)
-		if err != nil {
-			return "", err
-		}
-		liquid, ok := extractTagged(result, "liquid_email")
-		if !ok {
-			liquid = strings.TrimSpace(result)
-		}
-		if err := validateLiquid(liquid); err != nil {
-			lastErr = err
-			continue
-		}
-		return liquid, nil
-	}
-	return "", fmt.Errorf("output is not usable Liquid after %d attempts: %w", stepEMaxAttempts, lastErr)
-}
-
-// stepF runs the fluency check. liquidOutput must already be valid Liquid (from step E);
-// a fluency pass whose output fails validation is discarded, so the result is always valid.
-func stepF(ctx context.Context, client *anthropicClient, liquidOutput string) (string, string, error) {
-	system := "# Email Fluency Check Rules\n" + skillEmailFluencyCheck
-
-	current := liquidOutput
-	rejected := false
-	for range stepFMaxIterations {
-		user := fmt.Sprintf(`Review all non-English language versions in the Liquid email below for native fluency.
-Flag calques, anglicisms, register drift, or sentence rhythm that betrays translation.
-For each issue, provide a native rewrite.
-
-Then output the complete corrected Liquid between <final_liquid> and </final_liquid> tags, keeping the exact same structure: the ### Title, ### Pre-header and ### Message body headings, each followed by its `+"```liquid"+` fenced code block. Nothing else goes inside the tags.
-End your response with a final line: VERDICT: READY FOR PRODUCTION or VERDICT: REVISIONS REQUIRED
-
-<liquid_email>
-%s
-</liquid_email>`, current)
-
-		result, err := client.Send(ctx, system, user)
-		if errors.Is(err, errAnswerCutOff) {
-			// An unfinished fluency pass is discarded like an invalid one.
-			rejected = true
-			continue
-		}
-		if err != nil {
-			return current, "", err
-		}
-
-		if candidate, ok := extractTagged(result, "final_liquid"); ok && validateLiquid(candidate) == nil {
-			current = candidate
-		} else {
-			rejected = true
-		}
-
-		verdict := finalVerdict(result)
-		if strings.Contains(verdict, "READY FOR PRODUCTION") && !strings.Contains(verdict, "REVISIONS REQUIRED") {
-			if rejected {
-				return current, "⚠️ Fluency check returned unusable output at least once; kept the last valid Liquid version.", nil
-			}
-			return current, "", nil
-		}
-	}
-	return current, fmt.Sprintf("⚠️ Fluency check loop reached maximum iterations (%d). Proceeding with best available version.", stepFMaxIterations), nil
 }
 
 // extractTagged returns the trimmed text between <tag> and the last </tag> in s.
@@ -668,82 +501,4 @@ func finalVerdict(s string) string {
 		return ""
 	}
 	return strings.TrimSpace(upper[idx+len("VERDICT:"):])
-}
-
-var liquidCaseRe = regexp.MustCompile(`\{%-?\s*case\s+user\.language\s*-?%\}`)
-
-// validateLiquid checks that s is a Liquid email with a language switch and
-// parseable Title and Message body blocks.
-func validateLiquid(s string) error {
-	if !liquidCaseRe.MatchString(s) || !strings.Contains(s, "endcase") {
-		return fmt.Errorf("missing {%% case user.language %%} switch")
-	}
-	title, _, body := parseLiquidBlocks(s)
-	if title == "" || body == "" || body == strings.TrimSpace(s) {
-		return fmt.Errorf("missing ### Title or ### Message body block")
-	}
-	return nil
-}
-
-// parseLiquidBlocks extracts the three ### Title / ### Pre-header / ### Message body sections
-// from the pipeline's final output text.
-func parseLiquidBlocks(output string) (title, preHeader, body string) {
-	sections := map[string]*string{
-		"title":          &title,
-		"pre-header":     &preHeader,
-		"pre header":     &preHeader,
-		"message body":   &body,
-		"message-body":   &body,
-	}
-
-	lines := strings.Split(output, "\n")
-	var currentSection *string
-	var currentContent strings.Builder
-	inCodeBlock := false
-
-	flush := func() {
-		if currentSection != nil {
-			content := strings.TrimSpace(currentContent.String())
-			// Strip surrounding ```liquid ... ``` fences if present
-			content = strings.TrimPrefix(content, "```liquid")
-			content = strings.TrimPrefix(content, "```")
-			content = strings.TrimSuffix(content, "```")
-			*currentSection = strings.TrimSpace(content)
-			currentContent.Reset()
-		}
-	}
-
-	for _, line := range lines {
-		lower := strings.ToLower(strings.TrimSpace(line))
-
-		// Headings inside a code fence are email content (the body may use ## headings).
-		if !inCodeBlock && strings.HasPrefix(lower, "##") {
-			heading := strings.TrimSpace(strings.TrimLeft(lower, "#"))
-			flush()
-			currentSection = nil
-			for key, ptr := range sections {
-				if strings.HasPrefix(heading, key) {
-					currentSection = ptr
-					break
-				}
-			}
-			continue
-		}
-
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inCodeBlock = !inCodeBlock
-		}
-
-		if currentSection != nil {
-			currentContent.WriteString(line + "\n")
-		}
-	}
-	flush()
-
-	// Fallback: if parsing failed, put everything in the body
-	if title == "" && preHeader == "" && body == "" {
-		body = output
-	}
-
-	return title, preHeader, body
 }
