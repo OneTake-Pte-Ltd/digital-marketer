@@ -79,7 +79,7 @@ server/
     mocks/mock_commands.go  MockCommand for use in plugin-level tests.
 
   store/kvstore/
-    kvstore.go              KVStore interface (10 methods).
+    kvstore.go              KVStore interface (12 methods).
     neil.go                 Client implementation using pluginapi KV. Key format functions.
 
 assets/
