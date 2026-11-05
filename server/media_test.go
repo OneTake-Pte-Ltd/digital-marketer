@@ -163,3 +163,30 @@ func TestFormatRunStatusFlagsInterruptedRun(t *testing.T) {
 
 	assert.Contains(t, formatRunStatus("2026-10-21", status, true, started.Add(25*time.Minute)), "in progress")
 }
+
+func TestParseUpdateAudioFiles(t *testing.T) {
+	cases := []struct {
+		name     string
+		msg      telegramMessage
+		wantType string
+	}{
+		{"audio file", telegramMessage{Audio: &telegramFile{FileID: "a", MimeType: "audio/mpeg"}}, "audio"},
+		{"audio sent as a file", telegramMessage{Document: &telegramFile{FileID: "a", MimeType: "audio/x-m4a"}}, "audio"},
+		{"video sent as a file", telegramMessage{Document: &telegramFile{FileID: "a", MimeType: "video/quicktime"}}, "video"},
+		{"other file", telegramMessage{Document: &telegramFile{FileID: "a", MimeType: "application/pdf"}}, "document"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := c.msg
+			msg.MessageID = 1
+			post := parseUpdate(&telegramUpdate{ChannelPost: &msg}, cetLocation)
+			require.NotNil(t, post)
+			assert.Equal(t, c.wantType, post.MessageType)
+			assert.Equal(t, "a", post.FileID)
+		})
+	}
+	assert.True(t, isAudioVideo("audio"))
+	assert.False(t, isAudioVideo("document"))
+	assert.Equal(t, ".m4a", extensionForFile("https://api.telegram.org/file/botX/music/file_4.m4a", "audio"))
+	assert.Equal(t, ".mp3", extensionForFile("https://api.telegram.org/file/botX/music/file_4", "audio"))
+}

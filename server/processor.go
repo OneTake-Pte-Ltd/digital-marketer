@@ -252,7 +252,12 @@ func (p *Plugin) stopRun(ctx context.Context, date string, status *RunStatus, pr
 
 // isAudioVideo reports whether a post type carries speech that can be transcribed.
 func isAudioVideo(messageType string) bool {
-	return messageType == "voice" || messageType == "video" || messageType == "video_note"
+	switch messageType {
+	case "voice", "audio", "video", "video_note":
+		return true
+	default:
+		return false
+	}
 }
 
 // transcribedPost is an audio/video post together with its transcription.
@@ -405,6 +410,8 @@ func extensionForFile(fileURL, messageType string) string {
 	switch messageType {
 	case "voice":
 		return ".oga"
+	case "audio":
+		return ".mp3"
 	case "video", "video_note":
 		return ".mp4"
 	default:

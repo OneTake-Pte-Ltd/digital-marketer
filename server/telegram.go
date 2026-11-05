@@ -20,7 +20,7 @@ type telegramClient struct {
 
 func newTelegramClient(token string) *telegramClient {
 	return &telegramClient{
-		token: token,
+		token:      token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -148,6 +148,14 @@ func parseUpdate(update *telegramUpdate, cetLoc interface{ String() string }) *T
 	case msg.VideoNote != nil:
 		post.MessageType = "video_note"
 		post.FileID = msg.VideoNote.FileID
+	case msg.Audio != nil:
+		// An audio file (mp3, m4a...) sent as music rather than recorded as a voice note.
+		post.MessageType = "audio"
+		post.FileID = msg.Audio.FileID
+	case msg.Document != nil:
+		// A file sent "as a file": transcribable only when it holds audio or video.
+		post.MessageType = documentType(msg.Document.MimeType)
+		post.FileID = msg.Document.FileID
 	case len(msg.Photo) > 0:
 		post.MessageType = "photo"
 		// Use the highest-resolution photo (last in the array)
@@ -157,6 +165,19 @@ func parseUpdate(update *telegramUpdate, cetLoc interface{ String() string }) *T
 	}
 
 	return post
+}
+
+// documentType maps a document's MIME type to the message type of the speech it carries:
+// "audio" or "video", or "document" when it holds neither.
+func documentType(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "video"
+	default:
+		return "document"
+	}
 }
 
 // bareURLs returns the URLs typed directly in text, located by its "url" entities.

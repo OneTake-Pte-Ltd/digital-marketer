@@ -154,7 +154,7 @@ The webhook route is registered outside the `MattermostAuthorizationRequired` mi
 
 ## Media Upload and Transcription
 
-Only posts with `MessageType` of `voice`, `video`, or `video_note` are processed; `text` and `photo` posts are ignored, links included. For each one, `transcribeMediaPost`:
+Only posts with `MessageType` of `voice`, `audio`, `video`, or `video_note` are processed; `text`, `photo` and `document` posts are ignored, links included. `audio` is an audio file (mp3, m4a...) posted as music; a file sent "as a file" (Telegram `document`) becomes `audio` or `video` from its MIME type, else `document`. Telegram bots can only download files up to 20 MB. For each one, `transcribeMediaPost`:
 
 1. Reads the `MediaRecord`. If it already holds a transcription (from an earlier run of the same date), that transcription is reused.
 2. If there is no CDN URL yet, `uploadMedia` resolves the Telegram download URL with `GetFileURL` and passes it to the Edge Script (`FetchFile`). The Edge Script downloads the file from Telegram and writes it to BunnyCDN storage, so the file never passes through the Mattermost server. The returned CDN URL is stored. The file extension comes from the Telegram file path (`extensionForFile`).
