@@ -31,6 +31,10 @@ func mediaKey(messageID int64) string {
 	return fmt.Sprintf("media:%d", messageID)
 }
 
+func emailKey(postID string) string {
+	return fmt.Sprintf("email:%s", postID)
+}
+
 const webhookSecretKey = "neil:webhook:secret"
 
 func (kv *Client) StorePost(date string, messageID int64, post interface{}) error {
@@ -122,4 +126,19 @@ func (kv *Client) GetWebhookSecret() (string, error) {
 		return "", errors.Wrap(err, "KV.Get webhook secret failed")
 	}
 	return secret, nil
+}
+
+func (kv *Client) StoreEmail(postID string, email interface{}) error {
+	ok, err := kv.client.KV.Set(emailKey(postID), email)
+	if err != nil {
+		return errors.Wrap(err, "KV.Set email failed")
+	}
+	if !ok {
+		return errors.New("KV.Set email returned false")
+	}
+	return nil
+}
+
+func (kv *Client) GetEmail(postID string, dest interface{}) error {
+	return errors.Wrap(kv.client.KV.Get(emailKey(postID), dest), "KV.Get email failed")
 }

@@ -2,6 +2,7 @@ package command
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
@@ -24,6 +25,11 @@ func setupTest() *env {
 type mockRunner struct {
 	called bool
 	date   string
+	urls   chan string
+}
+
+func (m *mockRunner) RunProcessorURL(sourceURL string) {
+	m.urls <- sourceURL
 }
 
 func (m *mockRunner) RunProcessor(date string) {
@@ -100,4 +106,25 @@ func TestNeilStatusCommand(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "status for 2026-10-21", response.Text)
 	assert.False(t, runner.called)
+}
+
+func TestNeilRunCommandWithURL(t *testing.T) {
+	e := setupTest()
+	runner := &mockRunner{urls: make(chan string, 1)}
+	registerCommandMock(e)
+	cmdHandler := NewCommandHandler(e.client, runner)
+
+	response, err := cmdHandler.Handle(&model.CommandArgs{Command: "/neil run https://cdn.test/black-friday.mp3"})
+	assert.Nil(t, err)
+	assert.Contains(t, response.Text, "transcribing")
+	select {
+	case got := <-runner.urls:
+		assert.Equal(t, "https://cdn.test/black-friday.mp3", got)
+	case <-time.After(time.Second):
+		t.Fatal("RunProcessorURL was not called")
+	}
+
+	response, err = cmdHandler.Handle(&model.CommandArgs{Command: "/neil run http://cdn.test/a.mp3"})
+	assert.Nil(t, err)
+	assert.Contains(t, response.Text, "not an https link")
 }

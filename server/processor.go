@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 var cetLocation *time.Location
@@ -72,32 +74,38 @@ func (p *Plugin) RunProcessor(date string) {
 	if date == "" {
 		date = yesterdayInCET()
 	}
+	p.runWith(date, "/neil run "+date, func(ctx context.Context, status *RunStatus, progress *runProgress) {
+		p.processDate(ctx, date, status, progress)
+	})
+}
 
-	// One run per date at a time; a second one would post a duplicate email.
-	if _, running := p.runningDates.LoadOrStore(date, struct{}{}); running {
-		p.postToChannel(fmt.Sprintf("⚠️ Neil is already processing %s. Use `/neil status %s` to follow it.", date, date))
+// runWith runs body as the run named key: one run per key at a time, a progress post, a
+// time limit, and a crash turned into an error message. retry is the command that
+// replays the run, quoted in error messages.
+func (p *Plugin) runWith(key, retry string, body func(ctx context.Context, status *RunStatus, progress *runProgress)) {
+	// One run per key at a time; a second one would post a duplicate email.
+	if _, running := p.runningDates.LoadOrStore(key, struct{}{}); running {
+		p.postToChannel(fmt.Sprintf("⚠️ Neil is already processing %s. Use `/neil status %s` to follow it.", key, key))
 		return
 	}
-	defer p.runningDates.Delete(date)
+	defer p.runningDates.Delete(key)
 
-	p.API.LogInfo("Neil: starting morning processor", "date", date)
+	p.API.LogInfo("Neil: starting morning processor", "date", key)
 
-	cfg := p.getConfiguration()
-
-	// Step 2.1: Mark run as started
 	status := RunStatus{
 		Status:    "started",
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
-	progress := p.newRunProgress(date, &status)
+	progress := p.newRunProgress(key, &status)
+	progress.retry = retry
 
 	// Without this, a panic would crash the plugin process and end the run without a word.
 	defer func() {
 		if r := recover(); r != nil {
-			p.API.LogError("Neil: processor crashed", "date", date, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			p.API.LogError("Neil: processor crashed", "date", key, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 			progress.finish("❌ crashed; see the message below")
-			p.handleProcessorError(date, &status, status.Step, fmt.Errorf("unexpected crash: %v", r))
+			p.handleProcessorError(key, &status, status.Step, fmt.Errorf("unexpected crash: %v", r))
 		}
 	}()
 
@@ -105,12 +113,18 @@ func (p *Plugin) RunProcessor(date string) {
 	defer cancel()
 
 	progress.step("Run started")
+	body(ctx, &status, progress)
+}
+
+// processDate transcribes the stored audio and video posts of date and writes the email.
+func (p *Plugin) processDate(ctx context.Context, date string, status *RunStatus, progress *runProgress) {
+	cfg := p.getConfiguration()
 
 	// Step 2.1: Load all posts for yesterday
 	ids, err := p.kvstore.GetIndex(date)
 	if err != nil {
 		progress.finish("❌ failed; see the message below")
-		p.handleProcessorError(date, &status, "load index", err)
+		p.handleProcessorError(date, status, "load index", err)
 		return
 	}
 
@@ -136,11 +150,11 @@ func (p *Plugin) RunProcessor(date string) {
 
 	if len(mediaPosts) == 0 {
 		progress.finish("⚪ nothing to process")
-		msg := fmt.Sprintf("⚠️ No audio or video content found on the Telegram channel for %s. No email generated today.", date)
+		msg := fmt.Sprintf("⚠️ No audio or video content found on the Telegram channel for %s. No email generated today. If an audio was missed, run `/neil run <link to the audio file>`.", date)
 		p.postToChannel(msg)
 		status.Status = "completed_no_content"
 		status.UpdatedAt = time.Now()
-		_ = p.kvstore.StoreRunStatus(date, &status)
+		_ = p.kvstore.StoreRunStatus(date, status)
 		return
 	}
 
@@ -172,7 +186,7 @@ func (p *Plugin) RunProcessor(date string) {
 		transcribed = append(transcribed, transcribedPost{Post: post, Transcription: text})
 	}
 	if ctx.Err() != nil {
-		p.stopRun(ctx, date, &status, progress, "transcription", ctx.Err())
+		p.stopRun(ctx, date, status, progress, "transcription", ctx.Err())
 		return
 	}
 	progress.step(fmt.Sprintf("%d of %d audio or video posts transcribed", len(transcribed), len(mediaPosts)))
@@ -184,9 +198,16 @@ func (p *Plugin) RunProcessor(date string) {
 		status.Status = "failed_no_transcription"
 		status.Error = "no audio or video post could be transcribed"
 		status.UpdatedAt = time.Now()
-		_ = p.kvstore.StoreRunStatus(date, &status)
+		_ = p.kvstore.StoreRunStatus(date, status)
 		return
 	}
+
+	p.writeEmail(ctx, date, status, progress, transcribed)
+}
+
+// writeEmail runs the email pipeline on the transcribed posts and posts the email.
+func (p *Plugin) writeEmail(ctx context.Context, date string, status *RunStatus, progress *runProgress, transcribed []transcribedPost) {
+	cfg := p.getConfiguration()
 
 	// Step 2.5: Assemble context from the successfully transcribed posts only
 	dayCtx := buildDayContext(date, transcribed)
@@ -213,22 +234,27 @@ func (p *Plugin) RunProcessor(date string) {
 
 	result, err := RunPipeline(ctx, anthropicClient, pipelineInput, progress)
 	if err != nil {
-		p.stopRun(ctx, date, &status, progress, "email pipeline", err)
+		p.stopRun(ctx, date, status, progress, "email pipeline", err)
 		return
 	}
 
 	// Step 2.7: Post to Mattermost
-	if err := p.postEmailResult(date, result); err != nil {
+	emailPost, err := p.postEmailResult(date, result)
+	if err != nil {
 		progress.finish("❌ the email was written but could not be posted; see the message below")
-		p.handleProcessorError(date, &status, "post email", err)
+		p.handleProcessorError(date, status, "post email", err)
 		return
+	}
+	// Kept so that replies in the email's thread can revise it.
+	if err := p.kvstore.StoreEmail(emailPost.Id, &EmailRecord{Label: date, Versions: result.Versions}); err != nil {
+		p.API.LogWarn("Neil: failed to store the email for revisions", "date", date, "error", err.Error())
 	}
 	progress.finish("✅ done; the email is posted below")
 
 	status.Status = "completed"
 	status.UpdatedAt = time.Now()
 	status.Warnings = result.Warnings
-	_ = p.kvstore.StoreRunStatus(date, &status)
+	_ = p.kvstore.StoreRunStatus(date, status)
 
 	p.API.LogInfo("Neil: morning processor completed", "date", date)
 }
@@ -243,7 +269,7 @@ func (p *Plugin) stopRun(ctx context.Context, date string, status *RunStatus, pr
 	minutes := int(processorTimeout.Minutes())
 	p.API.LogError("Neil: run timed out", "date", date, "step", status.Step)
 	progress.finish(fmt.Sprintf("⏱ stopped after %d minutes; see the message below", minutes))
-	p.postToChannel(fmt.Sprintf("⚠️ Neil stopped the run for %s after %d minutes, during \"%s\". Run `/neil run %s` to retry; finished transcriptions are reused.", date, minutes, status.Step, date))
+	p.postToChannel(fmt.Sprintf("⚠️ Neil stopped the run for %s after %d minutes, during \"%s\". Run `%s` to retry.", date, minutes, status.Step, progress.retry))
 	status.Status = "failed_timeout"
 	status.Error = fmt.Sprintf("time limit of %d minutes reached during %q", minutes, status.Step)
 	status.UpdatedAt = time.Now()
@@ -348,7 +374,7 @@ func buildDayContext(date string, transcribed []transcribedPost) DayContext {
 	return ctx
 }
 
-func (p *Plugin) postEmailResult(date string, result *PipelineResult) error {
+func (p *Plugin) postEmailResult(date string, result *PipelineResult) (*model.Post, error) {
 	cfg := p.getConfiguration()
 
 	// Build mention string
@@ -361,13 +387,20 @@ func (p *Plugin) postEmailResult(date string, result *PipelineResult) error {
 		mentions = " " + strings.Join(parts, " ")
 	}
 
+	header := fmt.Sprintf("**Daily Email; %s**%s\n_Reply in this thread with comments or a reviewed copy, and Neil revises the email._\n\n", date, mentions)
+	return p.postEmail("", header, fmt.Sprintf("neil-%s-message-body.txt", date), result)
+}
+
+// postEmail posts the email's title, pre-header, body and warnings under header, as a
+// reply in rootID's thread when rootID is set. A body too long for one message is
+// attached as filename.
+func (p *Plugin) postEmail(rootID, header, filename string, result *PipelineResult) (*model.Post, error) {
 	block := func(heading, liquid string) string {
 		if liquid == "" {
 			return ""
 		}
 		return "### " + heading + "\n```liquid\n" + liquid + "\n```\n\n"
 	}
-	header := fmt.Sprintf("**Daily Email; %s**%s\n\n", date, mentions)
 	head := block("Title", result.TitleLiquid) + block("Pre-header", result.PreHeaderLiquid)
 	var footer strings.Builder
 	for _, w := range result.Warnings {
@@ -376,19 +409,16 @@ func (p *Plugin) postEmailResult(date string, result *PipelineResult) error {
 
 	msg := header + head + block("Message body", result.BodyLiquid) + footer.String()
 	if utf8.RuneCountInString(msg) <= maxPostRunes {
-		_, err := p.createPost("", msg, nil)
-		return err
+		return p.createPost(rootID, msg, nil)
 	}
 
 	// The six-language body often exceeds Mattermost's message limit: attach it instead.
-	filename := fmt.Sprintf("neil-%s-message-body.txt", date)
 	fileID, err := p.attachText(filename, result.BodyLiquid)
 	if err != nil {
-		return fmt.Errorf("attach the message body: %w", err)
+		return nil, fmt.Errorf("attach the message body: %w", err)
 	}
 	msg = header + head + "### Message body\n_Too long for one message; it is attached as `" + filename + "`._\n\n" + footer.String()
-	_, err = p.createPost("", msg, []string{fileID})
-	return err
+	return p.createPost(rootID, msg, []string{fileID})
 }
 
 func (p *Plugin) handleProcessorError(date string, status *RunStatus, step string, err error) {

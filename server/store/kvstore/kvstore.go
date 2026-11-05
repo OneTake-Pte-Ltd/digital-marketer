@@ -18,6 +18,10 @@ type KVStore interface {
 	StoreMedia(messageID int64, record interface{}) error
 	GetMedia(messageID int64, dest interface{}) error
 
+	// Final email posted in Mattermost, by the ID of its post, for revisions from feedback
+	StoreEmail(postID string, email interface{}) error
+	GetEmail(postID string, dest interface{}) error
+
 	// Webhook secret (generated once at activation)
 	StoreWebhookSecret(secret string) error
 	GetWebhookSecret() (string, error)

@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 // Runner is implemented by the plugin to trigger the morning processor and report on it.
 type Runner interface {
 	RunProcessor(date string)
+	// RunProcessorURL writes an email from the audio or video file at an https link.
+	RunProcessorURL(sourceURL string)
 	RunStatusReport(date string) string
 }
 
@@ -28,7 +31,7 @@ type Command interface {
 
 const neilCommandTrigger = "neil"
 
-const usage = "Usage: `/neil run [YYYY-MM-DD]` to process a day's posts, or `/neil status [YYYY-MM-DD]` to see where its last run got to. Without a date, Neil uses yesterday."
+const usage = "Usage: `/neil run [YYYY-MM-DD]` to process a day's posts, `/neil run <link>` to write an email from one audio or video file, or `/neil status [YYYY-MM-DD]` to see where the last run for a day got to. Without a date, Neil uses yesterday."
 
 // NewCommandHandler registers the /neil command and returns a handler.
 func NewCommandHandler(client *pluginapi.Client, runner Runner) Command {
@@ -41,7 +44,7 @@ func NewCommandHandler(client *pluginapi.Client, runner Runner) Command {
 
 func commandDefinition() *model.Command {
 	autocomplete := model.NewAutocompleteData(neilCommandTrigger, "[run|status] [YYYY-MM-DD]", "Run the daily email processor or check on it")
-	autocomplete.AddCommand(model.NewAutocompleteData("run", "[YYYY-MM-DD]", "Process a day's Telegram posts (default: yesterday)"))
+	autocomplete.AddCommand(model.NewAutocompleteData("run", "[YYYY-MM-DD | link]", "Process a day's Telegram posts (default: yesterday), or one audio file from its link"))
 	autocomplete.AddCommand(model.NewAutocompleteData("status", "[YYYY-MM-DD]", "Show where the last run for a day got to (default: yesterday)"))
 	return &model.Command{
 		Trigger:          neilCommandTrigger,
@@ -56,6 +59,15 @@ func (c *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 	fields := strings.Fields(args.Command)
 	if len(fields) < 2 || len(fields) > 3 {
 		return ephemeral(usage), nil
+	}
+
+	if len(fields) == 3 && strings.EqualFold(fields[1], "run") && strings.Contains(fields[2], "://") {
+		link := strings.Trim(fields[2], "<>")
+		if u, err := url.Parse(link); err != nil || u.Scheme != "https" || u.Host == "" {
+			return ephemeral(fmt.Sprintf("`%s` is not an https link. %s", link, usage)), nil
+		}
+		go c.runner.RunProcessorURL(link)
+		return ephemeral("Neil is transcribing the file and writing an email from it. Progress appears in the configured channel."), nil
 	}
 
 	date := ""

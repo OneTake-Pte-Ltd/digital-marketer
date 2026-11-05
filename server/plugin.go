@@ -38,6 +38,9 @@ type Plugin struct {
 
 	// runningDates holds the dates being processed right now, so a date never runs twice at once.
 	runningDates sync.Map
+
+	// revising holds the root post IDs of the emails being revised right now.
+	revising sync.Map
 }
 
 func (p *Plugin) OnActivate() error {
@@ -93,9 +96,14 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	return response, nil
 }
 
-// MessageHasBeenPosted triggers the processor when a user posts "@neil run" in any channel.
+// MessageHasBeenPosted revises an email when someone replies in its thread, and triggers
+// the processor when a user posts "@neil run" in any channel.
 func (p *Plugin) MessageHasBeenPosted(c *plugin.Context, post *model.Post) {
 	if p.botUserID == "" || post.UserId == p.botUserID {
+		return
+	}
+	if record, ok := p.emailThreadRoot(post); ok {
+		go p.ReviseEmail(post, record)
 		return
 	}
 	msg := strings.ToLower(post.Message)

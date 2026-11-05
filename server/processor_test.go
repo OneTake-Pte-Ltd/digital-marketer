@@ -20,6 +20,7 @@ type fakeKV struct {
 	mu       sync.Mutex
 	statuses map[string][]byte
 	media    map[int64]MediaRecord
+	emails   map[string][]byte
 	getIndex func(date string) ([]int64, error)
 }
 
@@ -30,6 +31,27 @@ func (f *fakeKV) StoreMedia(int64, interface{}) error        { return nil }
 func (f *fakeKV) GetMedia(id int64, dest interface{}) error {
 	if record, ok := f.media[id]; ok {
 		*dest.(*MediaRecord) = record
+	}
+	return nil
+}
+func (f *fakeKV) StoreEmail(postID string, email interface{}) error {
+	data, err := json.Marshal(email)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.emails == nil {
+		f.emails = map[string][]byte{}
+	}
+	f.emails[postID] = data
+	return nil
+}
+func (f *fakeKV) GetEmail(postID string, dest interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if data, ok := f.emails[postID]; ok {
+		return json.Unmarshal(data, dest)
 	}
 	return nil
 }
@@ -184,7 +206,8 @@ func TestPostEmailResultAttachesLongBody(t *testing.T) {
 	p, posts, uploads := postRecorder(t)
 	body := strings.Repeat("Une longue phrase en six langues. ", 1000)
 
-	require.NoError(t, p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", PreHeaderLiquid: "Aperçu", BodyLiquid: body}))
+	_, err := p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", PreHeaderLiquid: "Aperçu", BodyLiquid: body})
+	require.NoError(t, err)
 
 	require.Len(t, *posts, 1)
 	post := (*posts)[0]
@@ -198,7 +221,8 @@ func TestPostEmailResultAttachesLongBody(t *testing.T) {
 func TestPostEmailResultKeepsShortEmailInline(t *testing.T) {
 	p, posts, uploads := postRecorder(t)
 
-	require.NoError(t, p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", BodyLiquid: "Corps"}))
+	_, err := p.postEmailResult("2026-10-25", &PipelineResult{TitleLiquid: "Titre", BodyLiquid: "Corps"})
+	require.NoError(t, err)
 
 	require.Len(t, *posts, 1)
 	assert.Contains(t, (*posts)[0].Message, "Corps")

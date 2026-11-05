@@ -80,6 +80,16 @@ type PipelineResult struct {
 	PreHeaderLiquid string
 	BodyLiquid      string
 	Warnings        []string
+	// Versions holds each language version, by language code ("" is English).
+	Versions map[string]languageVersion
+}
+
+// EmailRecord is a final email posted in Mattermost, stored under its post ID so replies
+// in its thread can revise it. Versions are the latest ones, revisions included.
+type EmailRecord struct {
+	Label     string                     `json:"label"`
+	Versions  map[string]languageVersion `json:"versions"`
+	Revisions int                        `json:"revisions"`
 }
 
 // telegramUpdate is the raw webhook payload from Telegram.
