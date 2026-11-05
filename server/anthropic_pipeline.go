@@ -245,6 +245,7 @@ func RunPipeline(ctx context.Context, client *anthropicClient, input PipelineInp
 		PreHeaderLiquid: preHeader,
 		BodyLiquid:      body,
 		Warnings:        warnings,
+		Versions:        versions,
 	}, nil
 }
 

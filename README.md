@@ -114,6 +114,20 @@ To see where the last run for a date got to (without a date, yesterday):
 
 It shows the last step reached, when it was reached, and any error. A run marked "interrupted" stopped without finishing, usually because the plugin restarted (for example after uploading a new build); run it again.
 
+### Writing an email from one audio file
+
+When Neil missed an audio (for example a post from before audio files were supported), give it a link to the file:
+
+```
+/neil run https://www.dropbox.com/scl/fi/.../black-friday.m4a?dl=0
+```
+
+The link must download the file over https (a CDN, S3, a public Dropbox or Google Drive link: Neil turns their share links into download links). ElevenLabs downloads the file itself, so the 20 MB Telegram limit doesn't apply. The email is written from this audio alone; the run is named after today's date and the file name (e.g. `2026-11-05-black-friday`), so it doesn't block or replace the daily run.
+
+### Revising an email from feedback
+
+Reply in the thread of a final email with comments, a list of changes or a reviewed copy (pasted, or attached as a `.txt` or `.md` file). Neil applies the feedback to each language version directly, starting from the email it posted, and posts the revised email in the same thread. Reply again for another round: each revision starts from the latest one. The transcriptions and drafts are not used. Every reply in that thread counts as feedback, so discuss elsewhere.
+
 Users listed in **Users to Tag** and Mattermost system admins can run these commands.
 
 ## What Neil Posts

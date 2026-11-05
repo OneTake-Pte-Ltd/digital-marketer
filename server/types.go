@@ -4,14 +4,14 @@ import "time"
 
 // TelegramPost is a stored Telegram channel post.
 type TelegramPost struct {
-	MessageID   int64      `json:"message_id"`
-	DateUTC     time.Time  `json:"date_utc"`
-	MessageType string     `json:"message_type"` // voice, video, video_note, photo, text
-	FileID      string     `json:"file_id"`
-	Caption     string     `json:"caption"`
-	TextContent string     `json:"text_content"`
-	Entities    []TGEntity `json:"entities"`
-	MediaGroupID string    `json:"media_group_id"`
+	MessageID    int64      `json:"message_id"`
+	DateUTC      time.Time  `json:"date_utc"`
+	MessageType  string     `json:"message_type"` // voice, audio, video, video_note, photo, document, text
+	FileID       string     `json:"file_id"`
+	Caption      string     `json:"caption"`
+	TextContent  string     `json:"text_content"`
+	Entities     []TGEntity `json:"entities"`
+	MediaGroupID string     `json:"media_group_id"`
 }
 
 // TGEntity is a URL entity extracted from a Telegram post.
@@ -80,26 +80,38 @@ type PipelineResult struct {
 	PreHeaderLiquid string
 	BodyLiquid      string
 	Warnings        []string
+	// Versions holds each language version, by language code ("" is English).
+	Versions map[string]languageVersion
+}
+
+// EmailRecord is a final email posted in Mattermost, stored under its post ID so replies
+// in its thread can revise it. Versions are the latest ones, revisions included.
+type EmailRecord struct {
+	Label     string                     `json:"label"`
+	Versions  map[string]languageVersion `json:"versions"`
+	Revisions int                        `json:"revisions"`
 }
 
 // telegramUpdate is the raw webhook payload from Telegram.
 type telegramUpdate struct {
-	UpdateID    int64               `json:"update_id"`
-	ChannelPost *telegramMessage    `json:"channel_post"`
+	UpdateID    int64            `json:"update_id"`
+	ChannelPost *telegramMessage `json:"channel_post"`
 }
 
 type telegramMessage struct {
-	MessageID    int64             `json:"message_id"`
-	Date         int64             `json:"date"`
-	Text         string            `json:"text"`
-	Caption      string            `json:"caption"`
-	Voice        *telegramFile     `json:"voice"`
-	Video        *telegramFile     `json:"video"`
-	VideoNote    *telegramFile     `json:"video_note"`
-	Photo        []telegramFile    `json:"photo"`
-	Entities     []telegramEntity  `json:"entities"`
+	MessageID       int64            `json:"message_id"`
+	Date            int64            `json:"date"`
+	Text            string           `json:"text"`
+	Caption         string           `json:"caption"`
+	Voice           *telegramFile    `json:"voice"`
+	Video           *telegramFile    `json:"video"`
+	VideoNote       *telegramFile    `json:"video_note"`
+	Audio           *telegramFile    `json:"audio"`
+	Document        *telegramFile    `json:"document"`
+	Photo           []telegramFile   `json:"photo"`
+	Entities        []telegramEntity `json:"entities"`
 	CaptionEntities []telegramEntity `json:"caption_entities"`
-	MediaGroupID string            `json:"media_group_id"`
+	MediaGroupID    string           `json:"media_group_id"`
 }
 
 type telegramFile struct {
@@ -108,6 +120,7 @@ type telegramFile struct {
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
 	FileSize int    `json:"file_size"`
+	MimeType string `json:"mime_type"`
 }
 
 type telegramEntity struct {
@@ -120,7 +133,7 @@ type telegramEntity struct {
 type telegramGetFileResponse struct {
 	OK          bool   `json:"ok"`
 	Description string `json:"description"`
-	Result struct {
+	Result      struct {
 		FileID   string `json:"file_id"`
 		FilePath string `json:"file_path"`
 		FileSize int    `json:"file_size"`

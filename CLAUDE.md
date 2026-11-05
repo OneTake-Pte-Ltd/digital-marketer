@@ -41,6 +41,14 @@ server/
   skills.go                 Eight Go string constants, one per prompt skill (email principles,
                             CTA, nurture, copy review, humanize copy, language version, fluency
                             check, storyselling framework).
+  url_run.go                RunProcessorURL: `/neil run <https link>` transcribes one file through
+                            ElevenLabs (no Telegram, no Bunny) and writes the email from it alone.
+                            directDownloadURL (Dropbox, Google Drive share links), urlRunLabel.
+  revise.go                 Feedback revisions: a reply in a final email's thread (configured
+                            channel, not Neil) runs stepRevise on each language at once from the
+                            stored versions + the reply (text attachments included), then posts
+                            the revised email in the thread and stores it as the new base.
+  revise_test.go            reviseAll, ReviseEmail end to end, thread detection, URL helpers.
   telegram.go               telegramClient: SetWebhook, DeleteWebhook, GetFileURL,
                             parseUpdate (converts raw Telegram update to TelegramPost).
   bunnycdn.go               bunnyCDNClient: FetchFile; POSTs the Telegram file URL to the Bunny
@@ -64,14 +72,14 @@ server/
   media_test.go             Bunny retries, token redaction, caption URLs, buildDayContext.
 
   command/
-    command.go              /neil run|status [YYYY-MM-DD] slash command. Rejects malformed dates.
-                            Accepts Runner interface (implemented by Plugin: RunProcessor,
-                            RunStatusReport).
+    command.go              /neil run|status [YYYY-MM-DD], /neil run <https link> slash command.
+                            Rejects malformed dates and non-https links. Accepts Runner interface
+                            (implemented by Plugin: RunProcessor, RunProcessorURL, RunStatusReport).
     command_test.go         Unit tests for command parsing.
     mocks/mock_commands.go  MockCommand for use in plugin-level tests.
 
   store/kvstore/
-    kvstore.go              KVStore interface (10 methods).
+    kvstore.go              KVStore interface (12 methods).
     neil.go                 Client implementation using pluginapi KV. Key format functions.
 
 assets/
@@ -95,6 +103,7 @@ edge-scripts/
 | `tg:index:{YYYY-MM-DD}` | `[]int64` (ordered message IDs) | Webhook handler | RunProcessor |
 | `run:status:{YYYY-MM-DD}` | `RunStatus` JSON (status, last step, error) | RunProcessor, runProgress | runJob (duplicate guard), /neil status |
 | `media:{message_id}` | `MediaRecord` JSON (CDN URL + transcription) | transcribeMediaPost | transcribeMediaPost (reuses stored work on replay) |
+| `email:{post_id}` | `EmailRecord` JSON (label, language versions, revision count) | writeEmail, ReviseEmail | MessageHasBeenPosted (is this reply in an email thread?), ReviseEmail |
 | `neil:webhook:secret` | string (hex-encoded 32 bytes) | registerWebhook (once) | handleTelegramWebhook |
 
 The index key uses a 5-attempt optimistic CAS loop (get-modify-set) in `AppendToIndex` to handle concurrent webhook deliveries safely.
@@ -138,7 +147,7 @@ Steps E and F run once per language in `languages.go`, all six languages at the 
 
 `assembleEmail` builds the Liquid in code: the title and pre-header are one-line case switches (UserList's fields are one line; `singleLine` joins any line breaks), the body a multi-line switch. Without a P.S., `{{snippets.en_signature_sebastien}}` goes once after `{% endcase %}`; with one, it goes before the P.S. inside each language. Blank lines are removed from bodies.
 
-`postEmailResult` posts the final email; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
+`postEmailResult` posts the final email (through `postEmail`, also used for revisions) and `writeEmail` stores its language versions under the post ID; when it exceeds Mattermost's 16,383-character limit, the message body is attached as a file. A failed post fails the run instead of being reported as done.
 
 `RunPipeline` adds a warning when `findPlaceholders` finds bracketed text that isn't a Markdown link in the final email. The writing rules live in the prompts: no placeholders, active voice and full sentences are in step B's instructions, step C's light edit checklist and the humanize skill (categories 7 and 8). There is no length limit: the story takes the space it needs.
 
@@ -154,7 +163,7 @@ The webhook route is registered outside the `MattermostAuthorizationRequired` mi
 
 ## Media Upload and Transcription
 
-Only posts with `MessageType` of `voice`, `video`, or `video_note` are processed; `text` and `photo` posts are ignored, links included. For each one, `transcribeMediaPost`:
+Only posts with `MessageType` of `voice`, `audio`, `video`, or `video_note` are processed; `text`, `photo` and `document` posts are ignored, links included. `audio` is an audio file (mp3, m4a...) posted as music; a file sent "as a file" (Telegram `document`) becomes `audio` or `video` from its MIME type, else `document`. Telegram bots can only download files up to 20 MB. For each one, `transcribeMediaPost`:
 
 1. Reads the `MediaRecord`. If it already holds a transcription (from an earlier run of the same date), that transcription is reused.
 2. If there is no CDN URL yet, `uploadMedia` resolves the Telegram download URL with `GetFileURL` and passes it to the Edge Script (`FetchFile`). The Edge Script downloads the file from Telegram and writes it to BunnyCDN storage, so the file never passes through the Mattermost server. The returned CDN URL is stored. The file extension comes from the Telegram file path (`extensionForFile`).
@@ -194,7 +203,11 @@ To change the morning run time:
 
 **Update the offer description without redeploying:** Change the **Offer Description** setting in System Console. It is injected into Step B at run time.
 
-**Replay a past date:** Run `/neil run 2025-01-15`. The command rejects anything that isn't `YYYY-MM-DD`; no date means yesterday.
+**Replay a past date:** Run `/neil run 2025-01-15`. The command rejects anything that isn't `YYYY-MM-DD`; no date means yesterday. A replay only rereads what the webhook stored: a bot cannot reread old channel posts, so a post stored without its file can't be recovered this way.
+
+**Write an email from a missed audio:** Run `/neil run <https link to the file>`. The run (`RunProcessorURL`, through `runWith` like date runs) is named `{today}-{file name}`; its status key uses that name, which `/neil status` doesn't accept.
+
+**Revise an email:** reply in its thread. `stepRevise` gets only that language's latest version, the French version for reference and the feedback; a language that fails keeps its version with a warning. One revision per thread at a time (`Plugin.revising`).
 
 **Find out why a run went quiet:** Run `/neil status 2025-01-15`. A status of `started` with no run active in this process is reported as interrupted (the plugin restarted mid-run).
 

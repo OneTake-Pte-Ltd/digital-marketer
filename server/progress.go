@@ -17,6 +17,8 @@ type runProgress struct {
 	post   *model.Post
 	state  string
 	lines  []string
+	// retry is the command that replays the run, quoted when it stops.
+	retry string
 }
 
 func (p *Plugin) newRunProgress(date string, status *RunStatus) *runProgress {
