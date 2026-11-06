@@ -32,9 +32,22 @@ jobs:
         id: meta
         run: |
           PLUGIN_ID=$(python3 -c "import json; print(json.load(open('plugin.json'))['id'])")
-          VERSION=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+          TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VERSION=${TAG#v}
+          # Mattermost refuses a plugin whose version is not full semver: v1.7 becomes 1.7.0.
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          SEMVER="${MAJOR:-0}.${MINOR:-0}.${PATCH:-0}"
+          # A build after the tag shows how far it is from it, e.g. 1.7.0+3.gabc1234.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            AHEAD=$(git rev-list --count "$TAG"..HEAD)
+            if [ "$AHEAD" -gt 0 ]; then
+              SEMVER="$SEMVER+$AHEAD.g$(git rev-parse --short HEAD)"
+            fi
+          fi
+          echo "Plugin version: $SEMVER"
           echo "plugin_id=$PLUGIN_ID" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
           echo "bundle_name=${PLUGIN_ID}-${VERSION}.tar.gz" >> $GITHUB_OUTPUT
 
       - name: Build server binaries
@@ -61,7 +74,9 @@ jobs:
           BUNDLE="${{ steps.meta.outputs.bundle_name }}"
           mkdir -p dist/${PLUGIN_ID}/server
           mkdir -p dist/${PLUGIN_ID}/webapp
-          cp plugin.json dist/${PLUGIN_ID}/
+          # The version shown in System Console > Plugin Management comes from this file.
+          python3 -c "import json,sys; m=json.load(open('plugin.json')); m['version']=sys.argv[1]; json.dump(m, open(sys.argv[2],'w'), indent=4)" \
+            "${{ steps.meta.outputs.semver }}" dist/${PLUGIN_ID}/plugin.json
           cp -r assets   dist/${PLUGIN_ID}/
           if [ -d public ]; then cp -r public dist/${PLUGIN_ID}/; fi
           cp -r server/dist dist/${PLUGIN_ID}/server/
